@@ -58,7 +58,7 @@ ANSWER_PROMPT = """
     """
 
 
-def format_memory(episodes, summary) -> str:
+def format_memory(episodes, summary, kg_episodes) -> str:
     episode_context = (
         "<LONG TERM MEMORY EPISODES>\n"
         + "\n".join(
@@ -67,7 +67,15 @@ def format_memory(episodes, summary) -> str:
                 for episode in episodes
             ]
         )
-        + "\n</LONG TERM MEMORY EPISODES>"
+        + "\n</LONG TERM MEMORY EPISODES>\n"
+        + "<KNOWLEDGE GRAPH EPISODES>\n"
+        + "\n".join(
+            [
+                f"[{episode.properties['timestamp']}] {episode.properties['content']}"
+                for episode in kg_episodes
+            ]
+        )
+        + "\n</KNOWLEDGE GRAPH EPISODES>"
     )
     summary_context = (
         f"<WORKING MEMORY SUMMARY>\n{summary}\n</WORKING MEMORY SUMMARY>"
@@ -102,12 +110,14 @@ async def process_question(
         short_term_episodes,
         long_term_episodes,
         summaries,
+        kg_episodes,
     ) = await memory.query_memory(query=question, limit=30)
+
     episodes = long_term_episodes + short_term_episodes
     summary = summaries[0] if summaries else ""
     memory_end = time.time()
 
-    formatted_context = format_memory(episodes, summary)
+    formatted_context = format_memory(episodes, summary, kg_episodes)
     prompt = ANSWER_PROMPT.format(
         conversation_memories=formatted_context, question=question
     )
@@ -124,7 +134,7 @@ async def process_question(
 
     rsp_text = rsp.output_text
 
-    print(
+    print_info = (
         f"Question: {question}\n"
         f"Answer: {answer}\n"
         f"Response: {rsp_text}\n"
@@ -132,6 +142,7 @@ async def process_question(
         f"LLM response time: {llm_end - llm_start:.2f} seconds\n"
         f"MEMORIES START\n{formatted_context}MEMORIES END\n"
     )
+
     return {
         "question": question,
         "locomo_answer": answer,
@@ -140,6 +151,7 @@ async def process_question(
         "evidence": evidence,
         "adversarial_answer": adversarial_answer,
         "conversation_memories": formatted_context,
+        "print_info": print_info,
     }
 
 
@@ -208,16 +220,34 @@ async def main():
             )
 
         responses = []
+        tasks = []
+        num_batch = 20
         for qa in qa_list:
-            responses.append(await respond_question(qa))
+            tasks.append(respond_question(qa))
+            if len(tasks) >= num_batch:
+                ts = time.perf_counter()
+                print(f"Async gathering {len(tasks)} tasks...")
+                responses.extend(await asyncio.gather(*tasks))
+                print(f"Gathered {len(tasks)} tasks in {time.perf_counter() - ts:.2f}s")
+                tasks = []
+
+        if tasks:
+            ts = time.perf_counter()
+            print(f"Async gathering {len(tasks)} tasks...")
+            responses.extend(await asyncio.gather(*tasks))
+            print(f"Gathered {len(tasks)} tasks in {time.perf_counter() - ts:.2f}s")
+            tasks = []   
 
         for category, response in responses:
+            print(response["print_info"])
             category_result = results.get(category, [])
             category_result.append(response)
             results[category] = category_result
 
-    with open(target_path, "w") as f:
-        json.dump(results, f, indent=4)
+        with open(target_path, "a") as f:
+            json.dump(results, f, indent=4)
+        
+        results = {}
 
 
 if __name__ == "__main__":

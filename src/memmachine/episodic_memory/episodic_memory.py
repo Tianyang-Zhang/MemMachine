@@ -19,9 +19,10 @@ Key responsibilities include:
 import asyncio
 import copy
 import logging
-import uuid
+from uuid import UUID
 from datetime import datetime
 from typing import cast
+import os
 
 from memmachine.common.language_model.language_model_builder import (
     LanguageModelBuilder,
@@ -31,11 +32,33 @@ from memmachine.common.metrics_factory.metrics_factory_builder import (
 )
 
 from .data_types import ContentType, Episode, MemoryContext
+from memmachine.common.vector_graph_store import Node
+from memmachine.knowledge_graph.re_gpt4_1 import add_episode_bulk, search_kg
 from .long_term_memory.long_term_memory import LongTermMemory
 from .short_term_memory.session_memory import SessionMemory
 
-logger = logging.getLogger(__name__)
+os.environ["DSPY_CACHEDIR"] = "/tmp/dspy_cache"
+import dspy
 
+logger = logging.getLogger(__name__)
+dsyp_init = False
+
+import nltk
+
+print("Checking for required NLTK data...")
+packages = [
+    ("tokenizers/punkt", "punkt"),
+    ("tokenizers/punkt_tab", "punkt_tab"),
+    ("corpora/stopwords", "stopwords"),
+]
+for path, pkg_id in packages:
+    try:
+        nltk.data.find(path)
+        print(f"✅ - NLTK package '{pkg_id}' is already installed.")
+    except LookupError:
+        print(f"⚠️ - NLTK package '{pkg_id}' not found. Downloading...")
+        nltk.download(pkg_id)
+print("\nNLTK data setup is complete. ✨")
 
 class EpisodicMemory:
     # pylint: disable=too-many-instance-attributes
@@ -131,6 +154,12 @@ class EpisodicMemory:
             "query_count", "Count of query processing"
         )
 
+        global dsyp_init
+        if not dsyp_init:
+            # Check if DSPy is available
+            dspy.configure_cache(enable_disk_cache=True, enable_memory_cache=True, disk_cache_dir="/tmp/dspy_cache")
+            print("✅ DSPy available")
+
     @property
     def short_term_memory(self) -> SessionMemory | None:
         """
@@ -201,6 +230,15 @@ class EpisodicMemory:
                 return False
             self._ref_count += 1
             return True
+    
+    def group_id(self) -> str:
+        """
+        Get the group ID of the memory context.
+
+        Returns:
+            The group ID as a string.
+        """
+        return self._memory_context.group_id
 
     async def add_memory_episode(
         self,
@@ -211,6 +249,7 @@ class EpisodicMemory:
         content_type: ContentType,
         timestamp: datetime | None = None,
         metadata: dict | None = None,
+        uuid: UUID | None = None,
     ):
         # pylint: disable=too-many-arguments
         # pylint: disable=too-many-positional-arguments
@@ -257,8 +296,10 @@ class EpisodicMemory:
         start_time = datetime.now()
 
         # Create a new Episode object
+        if uuid is None:
+            raise ValueError("UUID must be provided for the episode")
         episode = Episode(
-            uuid=uuid.uuid4(),
+            uuid=uuid,
             episode_type=episode_type,
             content_type=content_type,
             content=episode_content,
@@ -270,12 +311,24 @@ class EpisodicMemory:
             user_metadata=metadata,
         )
 
+        # kg_episode = Node(
+        #     uuid=cur_uuid,
+        #     labels={"Episode"},
+        #     # Make timestamp different for each episode
+        #     properties={
+        #         "content": episode_content,
+        #         "timestamp": timestamp if timestamp else datetime.now(),
+        #         "session_id": self._memory_context.group_id
+        #     },
+        # )
+
         # Add the episode to both memory stores concurrently
         tasks = []
         if self._session_memory:
             tasks.append(self._session_memory.add_episode(episode))
         if self._long_term_memory:
             tasks.append(self._long_term_memory.add_episode(episode))
+        # tasks.append(add_episode_bulk([kg_episode]))
         await asyncio.gather(
             *tasks,
         )
@@ -361,42 +414,65 @@ class EpisodicMemory:
         # By default, always allow cross session search
         property_filter["group_id"] = self._memory_context.group_id
 
-        async with self._lock:
-            if self._session_memory is None:
-                short_episode: list[Episode] = []
-                short_summary = ""
-                long_episode = await cast(
-                    LongTermMemory, self._long_term_memory
-                ).search(
-                    query,
-                    search_limit,
-                    property_filter,
-                )
-            elif self._long_term_memory is None:
-                session_result = await self._session_memory.get_session_memory_context(
+        kg_episodes = None
+        # async with self._lock:
+        print("Starting memory query...")
+        if self._session_memory is None:
+            short_episode: list[Episode] = []
+            short_summary = ""
+            long_episode = await cast(
+                LongTermMemory, self._long_term_memory
+            ).search(
+                query,
+                search_limit,
+                property_filter,
+            )
+            _, kg_episodes = await search_kg(query, self._memory_context.group_id, limit=search_limit*2)
+        elif self._long_term_memory is None:
+            session_result, kg_result = await asyncio.gather(
+                self._session_memory.get_session_memory_context(
                     query, limit=search_limit
-                )
-                long_episode = []
-                short_episode, short_summary = session_result
-            else:
-                # Concurrently search both memory stores
-                session_result, long_episode = await asyncio.gather(
-                    self._session_memory.get_session_memory_context(
-                        query, limit=search_limit
-                    ),
-                    self._long_term_memory.search(query, search_limit, property_filter),
-                )
-                short_episode, short_summary = session_result
+                ),
+                search_kg(query, self._memory_context.group_id, limit=search_limit*2),
+            )
+            long_episode = []
+            short_episode, short_summary = session_result
+            _, kg_episodes = kg_result
+        else:
+            # Concurrently search both memory stores
+            session_result, long_episode, kg_result = await asyncio.gather(
+                self._session_memory.get_session_memory_context(
+                    query, limit=search_limit
+                ),
+                self._long_term_memory.search(query, search_limit, property_filter),
+                search_kg(query, self._memory_context.group_id, limit=search_limit*2),
+            )
+            short_episode, short_summary = session_result
+            _, kg_episodes = kg_result
+        
+        print(f"KG Search got {len(kg_episodes)} KG episodes.")
 
         # Deduplicate episodes from both memory stores, prioritizing
         # short-term memory
+        unique_long_episodes = []
         uuid_set = {episode.uuid for episode in short_episode}
 
-        unique_long_episodes = []
         for episode in long_episode:
             if episode.uuid not in uuid_set:
                 uuid_set.add(episode.uuid)
                 unique_long_episodes.append(episode)
+        
+        # Filter duplicate kg_episodes
+        result_kg_episodes = []
+        num_dup = 0
+        for e in kg_episodes:
+            if e.uuid in uuid_set:
+                num_dup += 1
+                continue
+            uuid_set.add(e.uuid)
+            result_kg_episodes.append(e)
+        
+        print(f"Filtered {num_dup} duplicate KG episodes.")
 
         end_time = datetime.now()
         delta = end_time - start_time
@@ -404,7 +480,7 @@ class EpisodicMemory:
             delta.total_seconds() * 1000 + delta.microseconds / 1000
         )
         self._query_counter.increment()
-        return short_episode, unique_long_episodes, [short_summary]
+        return short_episode, unique_long_episodes, [short_summary], result_kg_episodes[-search_limit:]
 
     async def formalize_query_with_context(
         self,
