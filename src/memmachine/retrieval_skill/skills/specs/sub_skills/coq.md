@@ -39,6 +39,8 @@ Follow this mechanism exactly.
 - Do not invent new entities.
 - Keep the flow sequential: each next hop depends on current cumulative evidence
   state.
+- Optimize for retrieval quality, not prose answering. This sub-skill must return
+  evidence-grounded retrieval state that helps an upper-level answerer.
 
 ### 2. Working state (must persist across hops)
 
@@ -46,12 +48,25 @@ Maintain:
 - `original_query`: incoming `query` string (fixed for full run)
 - `used_queries`: ordered list of issued `memmachine_search` queries
 - `all_retrieved_documents`: ordered list of all retrieved docs from every hop
+- `answer_candidate`: shortest explicit answer span currently supported by
+  cumulative evidence (empty until sufficient)
 
 Every sufficiency check must use `all_retrieved_documents`, not only the latest
 hop.
 
 `evidence_indices` must always reference `all_retrieved_documents` order
 (0-based).
+
+Maintain an internal hop table (scratch state) for reasoning quality:
+- hop id
+- resolved entity or relation target
+- missing fact to retrieve next
+- candidate answer value (if any)
+- evidence index support
+- conflicting candidate values (if any)
+
+Do not expose this table unless requested by contract; use it to prevent
+skipping blocking hops and to reduce type mistakes.
 
 ### 3. Iterative CoQ loop
 
@@ -62,8 +77,17 @@ For each iteration:
 4. Call `memmachine_search` with that `sub_query`.
 5. Append returned docs to `all_retrieved_documents`.
 6. Re-evaluate sufficiency on the full cumulative evidence.
+7. Extract/update `answer_candidate` only when the evidence explicitly states
+   the asked target attribute/person/date/location/organization.
 
 Stop immediately when sufficient.
+
+Before ending (sufficient or exhausted), verify final-hop coverage:
+- For relation-chain questions, at least one issued query must explicitly target
+  the final asked attribute (for example, birthplace, death place, award,
+  employer, maternal/paternal relation).
+- Do not stop after only identity-link evidence if the final asked attribute has
+  not been targeted.
 
 ### 4. Decompose required information
 
@@ -89,9 +113,37 @@ Query-generation policy:
 - Later hop queries must be derived from both `original_query` and
   `used_queries`/retrieved evidence.
 - Never repeat a previous query after lowercasing and whitespace normalization.
-- avoid duplicates of tried rewritten queries after normalization.
+- Avoid duplicates of tried rewritten queries after normalization.
 - Avoid near-duplicate rewrites with the same intent and missing-fact target.
 - Prefer minimal targeted queries for the earliest missing dependency hop.
+- Anchor later-hop queries with both:
+  - the resolved entity from prior hop(s), and
+  - a stable anchor from `original_query` (for example film/work/person title).
+  This improves reranking survival for final merged episodes.
+- For potentially ambiguous names, include disambiguating appositives in query
+  text when available from evidence (for example `Arshad Khan director of
+  Daadagiri nationality`).
+- For later-hop entity-attribute queries, include a stable anchor from
+  `original_query` (film/work/person title) in every rewrite; do not drop the
+  anchor in follow-up hops.
+- Before declaring query exhaustion, attempt at least one final-target lexical
+  variant that remains grounded and novel (for example `birthplace`,
+  `place of birth`; `country`, `nationality`; `work at`, `employer`,
+  `organization`).
+
+Relation-focused query templates (adapt as needed):
+- birthplace: `Where was [entity] born?`
+- death place: `Where did [entity] die?` / `[entity] place of death`
+- workplace/employer: `Where does [entity] work?` / `Which organization did
+  [entity] work for?`
+- awards: `What award did [entity] win?` / `[entity] awards won`
+- kinship chain hops: `Who was [entity]'s mother?` / `Who was [entity]'s
+  father?` / `Who was the mother of [resolved father]?`
+
+Alias/normalization policy for rewrites:
+- try at most one grounded alias rewrite when diacritics, punctuation, or title
+  variants are likely blocking retrieval
+- avoid spending the whole budget on spelling-only near-duplicates
 
 If no grounded novel query exists, stop and return insufficient with
 `reason_code=query_exhausted_no_novel_hop`.
@@ -104,6 +156,26 @@ Set `is_sufficient=true` only when all hold:
 - required exact details are explicitly present
 - completeness requirements (compare/list-all/count/full scope) are satisfiable
   from available evidence
+- final-hop evidence is present (not only intermediate identity-link evidence)
+- candidate answer type matches the asked target type
+- an explicit `answer_candidate` span is available from evidence
+- no unresolved conflict exists between competing answer values for the same
+  asked target; if conflict exists, issue a disambiguating query first
+
+Answer-type guardrails (required):
+- if question asks for `country`, do not treat city/organization as sufficient
+- if question asks for `organization` or workplace, do not treat nationality or
+  country-only evidence as sufficient
+- if question asks for year/date, ensure explicit temporal value is present
+- if question asks for person/kinship, ensure person entity is explicit
+- if question asks for workplace, return an organization/entity name, not only
+  a location/country
+- if question asks "work at", prefer an explicit employer/organization
+  affiliation over role titles alone (for example prefer `United Nations` over
+  `Minister of Foreign Affairs` when both appear as career facts)
+- if multiple plausible values exist for same-name entities, run a
+  disambiguating anchored query before sufficiency (include original film/work
+  title in the rewrite)
 
 If uncertain, choose `is_sufficient=false`.
 
@@ -111,10 +183,12 @@ If uncertain, choose `is_sufficient=false`.
 
 When `is_sufficient=true`:
 - stop searching immediately
-- return the final answer directly in assistant text (preferred), or return
-  structured success via `return_sub_skill_result`
-- if using structured success, set `new_query` to `original_query` exactly and
-  return supporting `evidence_indices`
+- return structured success via `return_sub_skill_result`
+- set `new_query` to `original_query` exactly
+- return supporting `evidence_indices`
+- include `answer_candidate` as the canonical short answer string
+- ensure `reason_note` states why the selected candidate is the best-supported
+  target value when multiple related facts appear
 
 Never issue another `memmachine_search` after sufficiency is reached.
 
@@ -124,6 +198,10 @@ When still insufficient:
 - continue the loop with a novel next query until step budget is exhausted
 - if finishing insufficient, return structured summary via
   `return_sub_skill_result` with the best next query candidate in `new_query`
+- ensure `new_query` is actionable and directly targets the earliest remaining
+  blocking fact (prefer final asked attribute when intermediate identity is
+  already resolved)
+- set `answer_candidate` to empty string when insufficient
 
 ### 10. Confidence calibration
 
@@ -147,17 +225,12 @@ If choosing insufficient due to uncertainty, keep confidence below `0.70`.
 ## Tools
 
 - `memmachine_search`: retrieve evidence for each iterative hop query.
-- `return_sub_skill_result`: optional structured completion payload, required
-  when ending insufficient.
+- `return_sub_skill_result`: required structured completion payload for both
+  sufficient and insufficient endings.
 
 ## Output Contract
 
-Preferred sufficient completion:
-- return direct final answer text in assistant response (no extra tool call
-  required).
-
-Structured completion (for insufficient, or if explicit structured success is
-needed):
+Structured completion (required for all endings):
 - return one JSON object as the `summary` value in `return_sub_skill_result`.
 
 `v1` required fields:
@@ -173,14 +246,15 @@ needed):
 - `evidence_summary`: short string
 - `steps`: integer >= 1
 - `used_queries`: array of strings
+- `answer_candidate`: short string (required to be non-empty when
+  `is_sufficient=true`)
 
 Fail-closed requirements:
 - never return free-form prose in place of JSON
 - never emit keys outside the documented contract
 - when insufficient and uncertain, keep `is_sufficient=false`
-- when sufficient, `new_query` must equal original query exactly
-- when sufficient in structured mode, `new_query` must equal `original_query`
-  exactly
+- when sufficient, `new_query` must equal `original_query` exactly
+- when sufficient, `answer_candidate` must be present and non-empty
 
 ## Examples
 
@@ -226,6 +300,11 @@ Output summary JSON:
 - Never use external world knowledge to fill missing facts.
 - Never invent entities not present in original query/evidence.
 - Never return `is_sufficient=true` under uncertainty.
+- Never return `is_sufficient=true` without an explicit answer span.
 - Never emit invalid evidence indices.
 - Never reset sufficiency judgment to only the latest hop's evidence.
 - Never issue duplicate `memmachine_search` queries in the same CoQ run.
+- Never terminate after identity-only evidence when the final asked attribute is
+  still missing.
+- Never use ambiguous same-name evidence when anchored disambiguation from
+  original query/evidence is available.

@@ -555,62 +555,60 @@ class SubSkillRunner:
             )
             fallback_execution_skill = self._execution_skill_for_branch(fallback_skill)
             selector_result: SubSkillExecutionResult | None = None
-            try:
-                selector_result = await self.run(
-                    skill_name="tool_select",
-                    policy=policy,
-                    query=self._query_with_override(query, branch_query),
-                )
-            except Exception:
-                return _SplitBranchSelection(
-                    query=branch_query,
-                    selected_skill=fallback_skill,
-                    execution_skill=fallback_execution_skill,
-                    status="fallback",
-                    parse_error="selector_exception",
-                    selector_summary="",
-                    selector_tool_calls=[],
-                )
+            selector_parse_error: str | None = None
+            total_selector_llm_time = 0.0
+            max_selector_attempts = 2
 
-            if selector_result.status != "success":
-                return _SplitBranchSelection(
-                    query=branch_query,
-                    selected_skill=fallback_skill,
-                    execution_skill=fallback_execution_skill,
-                    status="fallback",
-                    llm_time=selector_result.llm_time,
-                    parse_error=(
+            for _attempt in range(max_selector_attempts):
+                try:
+                    selector_result = await self.run(
+                        skill_name="tool_select",
+                        policy=policy,
+                        query=self._query_with_override(query, branch_query),
+                    )
+                except Exception:
+                    selector_parse_error = "selector_exception"
+                    continue
+
+                total_selector_llm_time += selector_result.llm_time
+                if selector_result.status != "success":
+                    selector_parse_error = (
                         selector_result.fallback_trigger_reason
                         or "selector_status_not_success"
-                    ),
-                    selector_summary=selector_result.summary,
-                    selector_tool_calls=selector_result.tool_calls,
-                )
+                    )
+                    continue
 
-            decision, parse_error = parse_route_decision_output_detailed(
-                selector_result.summary
-            )
-            if decision is None:
+                decision, parse_error = parse_route_decision_output_detailed(
+                    selector_result.summary
+                )
+                if decision is None:
+                    selector_parse_error = parse_error or "selector_parse_failed"
+                    continue
+
+                selected_skill = self._normalize_selected_skill(decision.selected_skill)
                 return _SplitBranchSelection(
                     query=branch_query,
-                    selected_skill=fallback_skill,
-                    execution_skill=fallback_execution_skill,
-                    status="fallback",
-                    llm_time=selector_result.llm_time,
-                    parse_error=parse_error or "selector_parse_failed",
+                    selected_skill=selected_skill,
+                    execution_skill=self._execution_skill_for_branch(selected_skill),
+                    status="success",
+                    llm_time=total_selector_llm_time,
                     selector_summary=selector_result.summary,
                     selector_tool_calls=selector_result.tool_calls,
                 )
 
-            selected_skill = self._normalize_selected_skill(decision.selected_skill)
             return _SplitBranchSelection(
                 query=branch_query,
-                selected_skill=selected_skill,
-                execution_skill=self._execution_skill_for_branch(selected_skill),
-                status="success",
-                llm_time=selector_result.llm_time,
-                selector_summary=selector_result.summary,
-                selector_tool_calls=selector_result.tool_calls,
+                selected_skill=fallback_skill,
+                execution_skill=fallback_execution_skill,
+                status="fallback",
+                llm_time=total_selector_llm_time,
+                parse_error=selector_parse_error or "selector_unclassifiable",
+                selector_summary=(
+                    selector_result.summary if selector_result is not None else ""
+                ),
+                selector_tool_calls=(
+                    selector_result.tool_calls if selector_result is not None else []
+                ),
             )
 
     async def _execute_split_branch(

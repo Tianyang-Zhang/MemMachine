@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -87,6 +88,9 @@ class RetrieveSkill(SkillToolBase):
         self._split_parallel_cap = int(self._extra_params.get("split_parallel_cap", 5))
         self._split_branch_retry_limit = int(
             self._extra_params.get("split_branch_retry_limit", 1)
+        )
+        self._sub_skill_episode_line_cap = int(
+            self._extra_params.get("sub_skill_episode_line_cap", 120)
         )
         self._available_sub_skills = list(
             self._extra_params.get(
@@ -284,7 +288,7 @@ class RetrieveSkill(SkillToolBase):
                 "episode_lines",
             }:
                 continue
-            if isinstance(value, (str, int, float, bool)) or value is None:
+            if isinstance(value, str | int | float | bool) or value is None:
                 sanitized[key] = value
                 continue
             if isinstance(value, dict):
@@ -294,6 +298,103 @@ class RetrieveSkill(SkillToolBase):
                 sanitized[key] = value
                 continue
         return sanitized or None
+
+    @staticmethod
+    def _summary_payload(summary: str) -> dict[str, object] | None:
+        stripped = summary.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, dict):
+            wrapped_v1 = parsed.get("v1")
+            if isinstance(wrapped_v1, dict):
+                return cast(dict[str, object], wrapped_v1)
+            return cast(dict[str, object], parsed)
+        return None
+
+    def _record_sub_skill_summary_metrics(
+        self,
+        *,
+        session: TopLevelSkillSessionState,
+        aggregated_metrics: dict[str, Any],
+        skill_name: str,
+        summary: str,
+    ) -> dict[str, object] | None:
+        stripped = summary.strip()
+        if not stripped:
+            return None
+
+        payload = self._summary_payload(stripped)
+        records = aggregated_metrics.get("sub_skill_summaries")
+        if not isinstance(records, list):
+            records = []
+            aggregated_metrics["sub_skill_summaries"] = records
+        record: dict[str, object] = {
+            "skill_name": skill_name,
+            "summary": stripped[:1000],
+        }
+        if isinstance(payload, dict):
+            record["summary_payload"] = payload
+        records.append(record)
+
+        if isinstance(payload, dict):
+            self._apply_sub_skill_sufficiency_signal(
+                session=session,
+                aggregated_metrics=aggregated_metrics,
+                skill_name=skill_name,
+                summary_payload=payload,
+            )
+        return payload
+
+    def _apply_sub_skill_sufficiency_signal(
+        self,
+        *,
+        session: TopLevelSkillSessionState,
+        aggregated_metrics: dict[str, Any],
+        skill_name: str,
+        summary_payload: dict[str, object],
+    ) -> None:
+        is_sufficient = summary_payload.get("is_sufficient")
+        if not isinstance(is_sufficient, bool):
+            return
+
+        aggregated_metrics["sufficiency_signal_seen"] = True
+        aggregated_metrics["latest_sufficiency_signal_skill"] = skill_name
+        aggregated_metrics["latest_sufficiency_signal"] = is_sufficient
+        if is_sufficient:
+            aggregated_metrics["evidence_sufficient"] = True
+        elif not bool(aggregated_metrics.get("evidence_sufficient", False)):
+            aggregated_metrics["evidence_sufficient"] = False
+
+        new_query = summary_payload.get("new_query")
+        if isinstance(new_query, str) and new_query.strip():
+            aggregated_metrics["latest_missing_query"] = new_query.strip()
+
+        reason_code = summary_payload.get("reason_code")
+        if isinstance(reason_code, str) and reason_code.strip():
+            aggregated_metrics["latest_sufficiency_reason_code"] = reason_code
+        reason_note = summary_payload.get("reason_note")
+        if isinstance(reason_note, str) and reason_note.strip():
+            aggregated_metrics["latest_sufficiency_reason_note"] = reason_note
+        answer_candidate = summary_payload.get("answer_candidate")
+        if isinstance(answer_candidate, str) and answer_candidate.strip():
+            candidate = answer_candidate.strip()
+            aggregated_metrics["latest_answer_candidate"] = candidate
+            if is_sufficient:
+                aggregated_metrics["answer_candidate"] = candidate
+
+        session.record_event(
+            actor="top-level",
+            event_type="sub_skill_sufficiency_signal",
+            detail=(
+                f"skill={skill_name}; "
+                f"is_sufficient={is_sufficient}; "
+                f"reason_code={reason_code or 'n/a'}"
+            ),
+        )
 
     def _record_tool_select_metrics(
         self,
@@ -707,6 +808,13 @@ class RetrieveSkill(SkillToolBase):
                         ),
                     )
 
+                summary_payload = self._record_sub_skill_summary_metrics(
+                    session=session,
+                    aggregated_metrics=aggregated_metrics,
+                    skill_name=sub_result.skill_name,
+                    summary=sub_result.summary,
+                )
+
                 session.record_sub_skill_run(
                     skill_name=sub_result.skill_name,
                     query=sub_result.query,
@@ -719,25 +827,40 @@ class RetrieveSkill(SkillToolBase):
                     branch_failure_count=sub_result.branch_failure_count,
                     branch_retry_count=sub_result.branch_retry_count,
                 )
+                episode_lines = [
+                    line
+                    for line in episodes_to_string(sub_result.episodes).splitlines()
+                    if line.strip()
+                ][: self._sub_skill_episode_line_cap]
                 spawn_arguments: dict[str, object] = {
                     "skill_name": sub_result.skill_name,
                     "query": sub_query,
                     "rationale": action.rationale,
                 }
-                if normalized_skill in {"tool_select", "select_skill"}:
+                if sub_result.summary.strip():
                     spawn_arguments["summary"] = sub_result.summary
-                    if decision is not None:
-                        spawn_arguments["selector_decision"] = decision.model_dump(
-                            mode="json"
-                        )
+                if summary_payload is not None:
+                    spawn_arguments["summary_payload"] = summary_payload
+                if (
+                    normalized_skill in {"tool_select", "select_skill"}
+                    and decision is not None
+                ):
+                    spawn_arguments["selector_decision"] = decision.model_dump(
+                        mode="json"
+                    )
                 response_payload: dict[str, object] = {
                     "skill_name": sub_result.skill_name,
                     "episodes_returned": len(sub_result.episodes),
                     "status": sub_result.status,
                     "branch_total": sub_result.branch_total,
+                    "tool_call_count": len(sub_result.tool_calls),
+                    "episodes_human_readable": episode_lines,
                 }
-                if normalized_skill in {"tool_select", "select_skill"}:
+                if sub_result.summary.strip():
                     response_payload["summary"] = sub_result.summary
+                if summary_payload is not None:
+                    response_payload["summary_payload"] = summary_payload
+                if normalized_skill in {"tool_select", "select_skill"}:
                     if decision is not None:
                         response_payload["selector_decision"] = decision.model_dump(
                             mode="json"

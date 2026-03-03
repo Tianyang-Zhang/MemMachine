@@ -106,6 +106,13 @@ Map class to skill and route as follows:
 
 If uncertain, lower confidence rather than inventing certainty.
 
+### 4.5 Reason note specificity
+
+When classifying dependency-chain queries as `coq`, include the final target
+attribute type in `reason_note` when obvious from query text (for example:
+country, workplace organization, birth/death location, year/date, kinship
+person). This is for downstream decomposition focus only.
+
 ### 5. One decision only
 
 Emit one decision object only. No prose and no extra keys.

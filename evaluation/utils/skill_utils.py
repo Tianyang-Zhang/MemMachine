@@ -118,6 +118,25 @@ def _build_skill_used_label(perf_metrics: dict[str, Any]) -> str:
     return ", ".join(labels) if labels else "N/A"
 
 
+def _build_retrieval_answer_hint(perf_metrics: dict[str, Any]) -> str:
+    if not bool(perf_metrics.get("latest_sufficiency_signal", False)):
+        return ""
+    answer_candidate = perf_metrics.get("latest_answer_candidate")
+    if not isinstance(answer_candidate, str) or not answer_candidate.strip():
+        return ""
+    reason_note = perf_metrics.get("latest_sufficiency_reason_note")
+    if isinstance(reason_note, str) and reason_note.strip():
+        return (
+            "[Retrieval-Skill Summary] "
+            f"Answer candidate: {answer_candidate.strip()}. "
+            f"Reason: {reason_note.strip()}."
+        )
+    return (
+        "[Retrieval-Skill Summary] "
+        f"Answer candidate: {answer_candidate.strip()}."
+    )
+
+
 async def process_question(
     answer_prompt: str,
     query_skill: SkillToolBase,
@@ -158,6 +177,10 @@ async def process_question(
         formatted_context = episodes_to_string(chunks)
     else:
         formatted_context = full_content
+
+    retrieval_answer_hint = _build_retrieval_answer_hint(perf_metrics)
+    if retrieval_answer_hint:
+        formatted_context = f"{retrieval_answer_hint}\n{formatted_context}".strip()
 
     prompt = answer_prompt.format(memories=formatted_context, question=question)
 
