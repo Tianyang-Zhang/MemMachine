@@ -1,0 +1,56 @@
+Mean Scores Per Category:
+                   llm_score  count
+category                           
+bridge_comparison     0.9524     21
+comparison            1.0000     25
+compositional         0.8718     39
+inference             0.9333     15
+
+Overall Mean Scores:
+llm_score    0.93
+dtype: float64
+
+--------------------------------
+Skills Overall Accuracy:
+Skill: ChainOfQuerySkill
+  Accuracy: 53/58 = 91.38%
+Skill: MemMachineSkill
+  Accuracy: 3/4 = 75.00%
+Skill: SplitSkill
+  Accuracy: 37/38 = 97.37%
+
+--------------------------------
+
+Wiki Info Matrix:
+wiki Recall: 199/244 = 81.56%
+wiki Precision: 199/2000 = 9.95%
+wiki Average Episodes Retrieved per Question: 20.00
+wiki Average Memory Retrieval Time per Question: 3.49 seconds
+wiki Average LLM Time per Question (only for questions that used LLM): 88.90 seconds
+Tool: ChainOfQuerySkill
+    Recall: 112/132 = 84.85%
+    Precision: 112/1160 = 9.66%
+    Avg Episodes Retrieved per Question: 20.00
+    Avg Input Tokens per Question: 112173.29
+    Avg Output Tokens per Question: 4738.00
+    Avg LLM Call per Question: 10.90
+Tool: SplitSkill
+    Recall: 81/104 = 77.88%
+    Precision: 81/760 = 10.66%
+    Avg Episodes Retrieved per Question: 20.00
+    Avg Input Tokens per Question: 70293.26
+    Avg Output Tokens per Question: 5955.05
+    Avg LLM Call per Question: 13.32
+Tool: MemMachineSkill
+    Recall: 6/8 = 75.00%
+    Precision: 6/80 = 7.50%
+    Avg Episodes Retrieved per Question: 20.00
+    Avg Input Tokens per Question: 21695.75
+    Avg Output Tokens per Question: 1839.50
+    Avg LLM Call per Question: 3.50
+
+ToolSelectSkill Avg Input Tokens per Question: 4665.92
+ToolSelectSkill Avg Output Tokens per Question: 451.20
+ToolSelectSkill Avg LLM Call per Question: 1.98
+
+
