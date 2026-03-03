@@ -1,19 +1,19 @@
 """Public contract surface for retrieval skill runtime helpers."""
 
-from memmachine.retrieval_skill.skills.runtime import (
+from memmachine_server.retrieval_skill.skills.runtime import (
     SkillResultNormalizer,
     build_skill_request,
     fallback_for_downstream_error,
     validate_skill_result,
 )
-from memmachine.retrieval_skill.skills.session_state import (
+from memmachine_server.retrieval_skill.skills.session_state import (
     SkillSessionEvent,
     SkillToolCallRecord,
     SubSkillRunRecord,
     TopLevelSkillSessionState,
 )
-from memmachine.retrieval_skill.skills.spec_loader import load_skill_spec
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.retrieval_skill.skills.spec_loader import load_skill_spec
+from memmachine_server.retrieval_skill.skills.types import (
     SKILL_CONTRACT_VERSION_V1,
     SkillContractError,
     SkillContractErrorCode,

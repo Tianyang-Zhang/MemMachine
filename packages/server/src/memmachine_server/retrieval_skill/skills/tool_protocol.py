@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.retrieval_skill.skills.types import (
     SkillContractError,
     SkillContractErrorCode,
     SkillContractErrorPayload,

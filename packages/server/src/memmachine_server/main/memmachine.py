@@ -46,8 +46,8 @@ from memmachine_server.common.session_manager.session_data_manager import (
     SessionDataManager,
 )
 from memmachine_server.episodic_memory import EpisodicMemory
-from memmachine.retrieval_skill import create_retrieval_skill
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.retrieval_skill import create_retrieval_skill
+from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,
     QueryPolicy,
     SkillToolBase,
@@ -998,7 +998,7 @@ class MemMachine:
         return MemMachine.SearchResponse(
             episodic_memory=await episodic_task if episodic_task else None,
             semantic_memory=await semantic_task if semantic_task else None,
-            retrieval_trace=retrieval_trace if retrieval_trace else None,
+            retrieval_trace=retrieval_trace or None,
         )
 
     class ListResults(BaseModel):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from memmachine.retrieval_skill.skills.spec_loader import load_skill_spec
+from memmachine_server.retrieval_skill.skills.spec_loader import load_skill_spec
 
 SPEC_ROOT = (
     Path(__file__).resolve().parents[3]

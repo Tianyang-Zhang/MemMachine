@@ -1,6 +1,6 @@
 """Shared interfaces and base types for retrieval skills."""
 
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,
     QueryPolicy,
     SkillToolBase,

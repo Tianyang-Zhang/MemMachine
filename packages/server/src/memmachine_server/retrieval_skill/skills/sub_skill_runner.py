@@ -10,9 +10,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from memmachine.common.episode_store import Episode
-from memmachine.common.episode_store.episode_model import episodes_to_string
-from memmachine.common.language_model import (
+from memmachine_server.common.episode_store import Episode
+from memmachine_server.common.episode_store.episode_model import episodes_to_string
+from memmachine_server.common.language_model import (
     SkillLanguageModel,
     SkillLanguageModelError,
     SkillRunResult,
@@ -21,22 +21,22 @@ from memmachine.common.language_model import (
     SkillToolCallFormatError,
     SkillToolNotFoundError,
 )
-from memmachine.common.language_model.language_model import LanguageModel
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.common.language_model.language_model import LanguageModel
+from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,
     QueryPolicy,
     SkillToolBase,
 )
-from memmachine.retrieval_skill.skills.route_policy import (
+from memmachine_server.retrieval_skill.skills.route_policy import (
     parse_route_decision_output_detailed,
 )
-from memmachine.retrieval_skill.skills.session_state import SkillToolCallRecord
-from memmachine.retrieval_skill.skills.spec_loader import load_skill_spec
-from memmachine.retrieval_skill.skills.tool_protocol import (
+from memmachine_server.retrieval_skill.skills.session_state import SkillToolCallRecord
+from memmachine_server.retrieval_skill.skills.spec_loader import load_skill_spec
+from memmachine_server.retrieval_skill.skills.tool_protocol import (
     parse_sub_skill_tool_call,
     sub_skill_tool_schemas,
 )
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.retrieval_skill.skills.types import (
     SkillContractError,
     SkillContractErrorCode,
     SkillContractErrorPayload,

@@ -28,8 +28,8 @@ from memmachine_server.common.filter.filter_parser import And as FilterAnd
 from memmachine_server.common.filter.filter_parser import Comparison as FilterComparison
 from memmachine_server.episodic_memory import EpisodicMemory
 from memmachine_server.main.memmachine import MemMachine, MemoryType
+from memmachine_server.retrieval_skill.common.skill_api import SkillToolBase
 from memmachine_server.semantic_memory.semantic_model import SemanticFeature
-from memmachine.retrieval_skill.common.skill_api import SkillToolBase
 
 
 class DummySessionData:

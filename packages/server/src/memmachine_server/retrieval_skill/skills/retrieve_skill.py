@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-from memmachine.common.episode_store import Episode
-from memmachine.common.episode_store.episode_model import episodes_to_string
-from memmachine.common.language_model import (
+from memmachine_server.common.episode_store import Episode
+from memmachine_server.common.episode_store.episode_model import episodes_to_string
+from memmachine_server.common.language_model import (
     SkillLanguageModel,
     SkillLanguageModelError,
     SkillSessionLimitError,
@@ -19,35 +19,37 @@ from memmachine.common.language_model import (
     SkillToolCallFormatError,
     SkillToolNotFoundError,
 )
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,
     QueryPolicy,
     SkillToolBase,
     SkillToolBaseParam,
 )
-from memmachine.retrieval_skill.skills.fallback_policy import (
+from memmachine_server.retrieval_skill.skills.fallback_policy import (
     FallbackTrigger,
     decide_fallback_action,
 )
-from memmachine.retrieval_skill.skills.route_policy import (
+from memmachine_server.retrieval_skill.skills.route_policy import (
     parse_route_decision_output_detailed,
 )
-from memmachine.retrieval_skill.skills.runtime import (
+from memmachine_server.retrieval_skill.skills.runtime import (
     build_skill_request,
     fallback_for_downstream_error,
 )
-from memmachine.retrieval_skill.skills.session_state import TopLevelSkillSessionState
-from memmachine.retrieval_skill.skills.spec_loader import load_skill_spec
-from memmachine.retrieval_skill.skills.sub_skill_runner import (
+from memmachine_server.retrieval_skill.skills.session_state import (
+    TopLevelSkillSessionState,
+)
+from memmachine_server.retrieval_skill.skills.spec_loader import load_skill_spec
+from memmachine_server.retrieval_skill.skills.sub_skill_runner import (
     SubSkillExecutionResult,
     SubSkillRunner,
 )
-from memmachine.retrieval_skill.skills.tool_protocol import (
+from memmachine_server.retrieval_skill.skills.tool_protocol import (
     TOP_LEVEL_TOOL_NAMES,
     parse_top_level_tool_call,
     top_level_tool_schemas,
 )
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.retrieval_skill.skills.types import (
     RouteDecisionV1,
     SkillContractError,
     SkillContractErrorCode,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from memmachine.common.episode_store import Episode
+from memmachine_server.common.episode_store import Episode
 
 
 class SkillSessionEvent(BaseModel):

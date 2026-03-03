@@ -5,10 +5,10 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from memmachine.common.episode_store import Episode
-from memmachine.retrieval_skill.skills.runtime import validate_skill_result
-from memmachine.retrieval_skill.skills.spec_loader import load_skill_spec
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.common.episode_store import Episode
+from memmachine_server.retrieval_skill.skills.runtime import validate_skill_result
+from memmachine_server.retrieval_skill.skills.spec_loader import load_skill_spec
+from memmachine_server.retrieval_skill.skills.types import (
     SkillContractError,
     SkillContractErrorCode,
     SkillRequestV1,

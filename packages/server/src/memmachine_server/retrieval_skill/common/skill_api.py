@@ -6,12 +6,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, InstanceOf
 
-from memmachine.common.episode_store import Episode
-from memmachine.common.episode_store.episode_model import episodes_to_string
-from memmachine.common.filter.filter_parser import FilterExpr
-from memmachine.common.language_model.language_model import LanguageModel
-from memmachine.common.reranker.reranker import Reranker
-from memmachine.episodic_memory import EpisodicMemory
+from memmachine_server.common.episode_store import Episode
+from memmachine_server.common.episode_store.episode_model import episodes_to_string
+from memmachine_server.common.filter.filter_parser import FilterExpr
+from memmachine_server.common.language_model.language_model import LanguageModel
+from memmachine_server.common.reranker.reranker import Reranker
+from memmachine_server.episodic_memory import EpisodicMemory
 
 logger = logging.getLogger(__name__)
 

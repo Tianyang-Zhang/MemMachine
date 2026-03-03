@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from memmachine.retrieval_skill.skills.spec_loader import load_skill_spec
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.retrieval_skill.skills.spec_loader import load_skill_spec
+from memmachine_server.retrieval_skill.skills.types import (
     SkillContractError,
     SkillContractErrorCode,
 )

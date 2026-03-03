@@ -5,18 +5,18 @@ from typing import Any
 
 import pytest
 
-from memmachine.common.episode_store import Episode, EpisodeResponse
-from memmachine.common.language_model.language_model import LanguageModel
-from memmachine.common.reranker.reranker import Reranker
-from memmachine.episodic_memory import EpisodicMemory
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.common.episode_store import Episode, EpisodeResponse
+from memmachine_server.common.language_model.language_model import LanguageModel
+from memmachine_server.common.reranker.reranker import Reranker
+from memmachine_server.episodic_memory import EpisodicMemory
+from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,
     QueryPolicy,
     SkillToolBaseParam,
 )
-from memmachine.retrieval_skill.service_locator import create_retrieval_skill
-from memmachine.retrieval_skill.subskills import MemMachineSkill
-from tests.memmachine.retrieval_skill.skill_session_stub import (
+from memmachine_server.retrieval_skill.service_locator import create_retrieval_skill
+from memmachine_server.retrieval_skill.subskills import MemMachineSkill
+from server_tests.memmachine_server.retrieval_skill.skill_session_stub import (
     ScriptedSkillSessionModel,
 )
 

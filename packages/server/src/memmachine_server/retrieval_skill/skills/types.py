@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from memmachine.common.episode_store import Episode
+from memmachine_server.common.episode_store import Episode
 
 SKILL_CONTRACT_VERSION_V1: Literal["v1"] = "v1"
 

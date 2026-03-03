@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.retrieval_skill.skills.types import (
     SkillContractError,
     SkillContractErrorCode,
     SkillContractErrorPayload,

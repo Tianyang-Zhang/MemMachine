@@ -34,15 +34,16 @@ from memmachine_server.episodic_memory.long_term_memory import (
     LongTermMemory,
     LongTermMemoryParams,
 )
-
-from memmachine.retrieval_skill import create_retrieval_skill
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.retrieval_skill import create_retrieval_skill
+from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,
     QueryPolicy,
     SkillToolBase,
     SkillToolBaseParam,
 )
-from memmachine.retrieval_skill.subskills.direct_memory_skill import MemMachineSkill
+from memmachine_server.retrieval_skill.subskills.direct_memory_skill import (
+    MemMachineSkill,
+)
 
 RETRIEVE_SKILL_NAME = "RetrieveSkill"
 DIRECT_MEMORY_SKILL_NAME = "MemMachineSkill"

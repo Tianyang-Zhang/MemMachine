@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from memmachine.retrieval_skill.skills.route_policy import (
+from memmachine_server.retrieval_skill.skills.route_policy import (
     ROUTE_DECOMPOSE,
     ROUTE_DIRECT_MEMORY,
     choose_route_decision,

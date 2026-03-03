@@ -6,8 +6,8 @@ from collections.abc import Callable
 
 from pydantic import ValidationError
 
-from memmachine.retrieval_skill.common.skill_api import QueryParam
-from memmachine.retrieval_skill.skills.types import (
+from memmachine_server.retrieval_skill.common.skill_api import QueryParam
+from memmachine_server.retrieval_skill.skills.types import (
     SKILL_CONTRACT_VERSION_V1,
     SkillContractError,
     SkillContractErrorCode,

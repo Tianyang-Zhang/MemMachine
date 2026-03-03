@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.retrieval_skill.common.skill_api import (
     SkillToolBase,
     SkillToolBaseParam,
 )

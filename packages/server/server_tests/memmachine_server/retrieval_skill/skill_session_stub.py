@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from memmachine.common.language_model import (
+from memmachine_server.common.language_model import (
     SkillRunResult,
     SkillSessionLimitError,
     SkillToolCallFormatError,
     SkillToolExecution,
     SkillToolNotFoundError,
 )
-from memmachine.common.language_model.language_model import LanguageModel
+from memmachine_server.common.language_model.language_model import LanguageModel
 
 
 class ScriptedSkillSessionModel:

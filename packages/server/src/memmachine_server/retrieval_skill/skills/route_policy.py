@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from memmachine.retrieval_skill.skills.types import RouteDecisionV1
+from memmachine_server.retrieval_skill.skills.types import RouteDecisionV1
 
 ROUTE_DIRECT_MEMORY = "direct_memory"
 ROUTE_DECOMPOSE = "decompose"
@@ -57,9 +57,9 @@ def _skill_from_label(text: str) -> str | None:
     return None
 
 
-def parse_route_decision_output_detailed(
+def parse_route_decision_output_detailed(  # noqa: C901
     output_text: str,
-) -> tuple[RouteDecisionV1 | None, str | None]:  # noqa: C901
+) -> tuple[RouteDecisionV1 | None, str | None]:
     """Parse selector output into RouteDecisionV1 and return parse diagnostics."""
     stripped = output_text.strip()
     if not stripped:
@@ -155,6 +155,6 @@ __all__ = [
     "ROUTE_DIRECT_MEMORY",
     "ROUTE_SELECTION_PROMPT",
     "choose_route_decision",
-    "parse_route_decision_output_detailed",
     "parse_route_decision_output",
+    "parse_route_decision_output_detailed",
 ]

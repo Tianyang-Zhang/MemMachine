@@ -2,18 +2,18 @@
 
 import logging
 
-from memmachine.common.language_model import (
+from memmachine_server.common.language_model import (
     LanguageModel,
     SkillLanguageModel,
     SkillSessionModelProtocol,
 )
-from memmachine.common.reranker import Reranker
-from memmachine.retrieval_skill.common.skill_api import (
+from memmachine_server.common.reranker import Reranker
+from memmachine_server.retrieval_skill.common.skill_api import (
     SkillToolBase,
     SkillToolBaseParam,
 )
-from memmachine.retrieval_skill.skills.retrieve_skill import RetrieveSkill
-from memmachine.retrieval_skill.subskills import MemMachineSkill
+from memmachine_server.retrieval_skill.skills.retrieve_skill import RetrieveSkill
+from memmachine_server.retrieval_skill.subskills import MemMachineSkill
 
 logger = logging.getLogger(__name__)
 
