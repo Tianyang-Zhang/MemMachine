@@ -52,9 +52,25 @@ Common signals:
   "from there", "which of those", "once you find", "given the answer to",
   "trace", "derive"
 - relationship chains requiring intermediate resolution
+- possessive dependency chains where a relative/entity must be resolved before
+  the final attribute can be answered (for example, "X's mother ... where did
+  she die?")
+- role-then-attribute patterns, where you must first identify a role holder and
+  then answer about that role holder (for example: director/author/spouse/
+  parent/grandparent/founder/performer + nationality/workplace/death date)
+- kinship-chain questions (maternal/paternal, grandfather/grandmother, etc.)
+  that require traversing family relations before answering
 - comparisons/timelines that first require derived intermediate facts
 
 Tie-breaker: if any explicit dependency chain exists, classify as multi-hop.
+
+Dependency litmus test:
+- If the query can be rewritten as "First find entity A, then answer B about A",
+  it is `coq`.
+- If answering requires resolving an entity not already explicit in final form
+  (for example, "the X of Y"), it is usually `coq`.
+- For compositional/inference-style relation chains, prefer `coq` over
+  `direct_memory`.
 
 #### B) Single-hop with multiple independent entities/keywords -> `split`
 
@@ -70,6 +86,14 @@ Common signals:
 
 Choose `direct_memory` when the query is one straightforward lookup about one
 main subject and does not require dependency decomposition or branch splitting.
+
+Direct-memory guardrails:
+- Do NOT choose `direct_memory` when the query target is an attribute of an
+  intermediate entity reached through a relation chain.
+- Do NOT choose `direct_memory` for nested "of ... of ..." relation chains that
+  require at least one entity-resolution step.
+- Use `direct_memory` only when the asked fact is directly about the stated
+  main subject without dependent resolution.
 
 ### 3. Deterministic mapping
 

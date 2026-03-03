@@ -56,6 +56,7 @@ class SkillRunResult(BaseModel):
     tool_executions: list[SkillToolExecution] = Field(default_factory=list)
     llm_input_tokens: int = 0
     llm_output_tokens: int = 0
+    llm_time_seconds: float = 0.0
     turn_count: int = 0
 
 
@@ -136,6 +137,7 @@ class SkillLanguageModel:
         tool_executions: list[SkillToolExecution] = []
         input_tokens_total = 0
         output_tokens_total = 0
+        llm_time_total = 0.0
         raw_model_output = ""
         last_response_id: str | None = None
         current_input: list[dict[str, object]] = [
@@ -146,7 +148,10 @@ class SkillLanguageModel:
         while True:
             if turn_count >= max_turns:
                 raise SkillSessionLimitError("Skill session exceeded max_turns.")
-            if timeout_seconds is not None and (time.monotonic() - started) > timeout_seconds:
+            if (
+                timeout_seconds is not None
+                and (time.monotonic() - started) > timeout_seconds
+            ):
                 raise SkillSessionLimitError("Skill session exceeded timeout.")
 
             request: dict[str, object] = {
@@ -160,10 +165,11 @@ class SkillLanguageModel:
             if last_response_id is not None:
                 request["previous_response_id"] = last_response_id
 
+            llm_call_started = time.monotonic()
             response = await self._call_responses_create_with_retry(
-                max_attempts=3,
-                **request,
+                max_attempts=3, **request
             )
+            llm_time_total += time.monotonic() - llm_call_started
             turn_count += 1
 
             last_response_id = self._response_id(response)
@@ -185,6 +191,7 @@ class SkillLanguageModel:
                     tool_executions=tool_executions,
                     llm_input_tokens=input_tokens_total,
                     llm_output_tokens=output_tokens_total,
+                    llm_time_seconds=llm_time_total,
                     turn_count=turn_count,
                 )
 
@@ -246,7 +253,9 @@ class SkillLanguageModel:
         if not isinstance(raw_call, dict):
             raise SkillToolCallFormatError("Tool call entry must be an object.")
         if raw_call.get("type") != "function_call":
-            raise SkillToolCallFormatError("Tool call entry must have type=function_call.")
+            raise SkillToolCallFormatError(
+                "Tool call entry must have type=function_call."
+            )
 
         name = raw_call.get("name")
         arguments = raw_call.get("arguments", {})
@@ -272,9 +281,13 @@ class SkillLanguageModel:
                     "Failed to parse function call arguments."
                 ) from err
             if not isinstance(parsed, dict):
-                raise SkillToolCallFormatError("Function arguments must decode to object.")
+                raise SkillToolCallFormatError(
+                    "Function arguments must decode to object."
+                )
             return {str(key): value for key, value in parsed.items()}
-        raise SkillToolCallFormatError("Function call arguments must be object or JSON string.")
+        raise SkillToolCallFormatError(
+            "Function call arguments must be object or JSON string."
+        )
 
     async def _call_responses_create_with_retry(
         self,
@@ -319,7 +332,9 @@ class SkillLanguageModel:
                     f"with non-retryable {type(err).__name__}."
                 ) from err
 
-        raise SkillLanguageModelError("responses.create retry loop exited unexpectedly.")
+        raise SkillLanguageModelError(
+            "responses.create retry loop exited unexpectedly."
+        )
 
     def _response_id(self, response: object) -> str | None:
         if isinstance(response, dict):

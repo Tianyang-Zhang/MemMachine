@@ -291,6 +291,109 @@ async def test_invalid_tool_select_summary_is_ignored(
 
 
 @pytest.mark.asyncio
+async def test_first_tool_select_decision_is_preserved_when_selector_runs_again(
+    query_policy: QueryPolicy,
+) -> None:
+    episode = _build_episode("route-3")
+    memory = FakeEpisodicMemory({"hello": [episode]})
+    model = ScriptedLanguageModel(
+        outputs=[
+            (
+                "top-level",
+                [
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "tool_select",
+                                "query": "hello",
+                                "rationale": "initial route selection",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "tool_select",
+                                "query": "Date of death of Fleetwood Sheppard",
+                                "rationale": "branch follow-up route selection",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "direct_memory_search",
+                            "arguments": {"query": "hello"},
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {"final_response": "ok"},
+                        }
+                    },
+                ],
+            ),
+            (
+                "selector-1",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"split",'
+                                    '"selected_route":"decompose",'
+                                    '"confidence_score":0.92,'
+                                    '"reason_code":"independent_multi_entity"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
+                "selector-2",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"direct_memory",'
+                                    '"selected_route":"direct_memory",'
+                                    '"confidence_score":0.94,'
+                                    '"reason_code":"single_hop_direct"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+        ]
+    )
+
+    skill = _build_skill(model)
+    episodes, metrics = await skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert [item.uid for item in episodes] == ["route-3"]
+    assert metrics["selected_route"] == "decompose"
+    assert metrics["selected_skill"] == "split"
+    assert metrics["selected_skill_name"] == "SplitSkill"
+    assert metrics["latest_selected_route"] == "direct_memory"
+    assert metrics["latest_selected_skill"] == "direct_memory"
+    decisions = metrics["selector_decisions"]
+    assert isinstance(decisions, list)
+    assert len(decisions) == 2
+    assert decisions[0]["selected_skill"] == "split"
+    assert decisions[1]["selected_skill"] == "direct_memory"
+
+
+@pytest.mark.asyncio
 async def test_tool_select_invalid_summary_retries_once_then_fallback(
     query_policy: QueryPolicy,
 ) -> None:

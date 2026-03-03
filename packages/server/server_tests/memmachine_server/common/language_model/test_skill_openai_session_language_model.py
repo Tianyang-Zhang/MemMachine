@@ -61,7 +61,9 @@ async def test_openai_live_session_chains_previous_response_id(
     result = await model.run_live_session(
         system_prompt="sys",
         user_prompt="find alpha",
-        tools=[{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        tools=[
+            {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+        ],
         tool_registry={"lookup": lookup},
     )
 
@@ -69,6 +71,7 @@ async def test_openai_live_session_chains_previous_response_id(
     assert result.turn_count == 2
     assert result.llm_input_tokens == 5
     assert result.llm_output_tokens == 3
+    assert result.llm_time_seconds >= 0.0
     assert len(result.tool_executions) == 1
     assert result.tool_executions[0].name == "lookup"
     assert result.tool_executions[0].call_id == "c1"
@@ -124,7 +127,9 @@ async def test_openai_live_session_uses_only_function_call_outputs_in_followup_i
     _result = await model.run_live_session(
         system_prompt="sys",
         user_prompt="find alpha",
-        tools=[{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        tools=[
+            {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+        ],
         tool_registry={"lookup": lookup},
     )
 
@@ -168,7 +173,9 @@ async def test_openai_live_session_raises_for_unknown_tool(
         await model.run_live_session(
             system_prompt="sys",
             user_prompt="find alpha",
-            tools=[{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+            tools=[
+                {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+            ],
             tool_registry={},
         )
 
@@ -205,7 +212,9 @@ async def test_openai_live_session_respects_max_turns(
         await model.run_live_session(
             system_prompt="sys",
             user_prompt="find alpha",
-            tools=[{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+            tools=[
+                {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+            ],
             tool_registry={"lookup": lookup},
             max_turns=1,
         )

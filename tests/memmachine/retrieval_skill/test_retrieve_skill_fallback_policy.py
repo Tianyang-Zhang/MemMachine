@@ -381,6 +381,24 @@ async def test_split_branch_failure_triggers_fallback(
                 ],
             ),
             (
+                "branch-selector",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"coq",'
+                                    '"selected_route":"decompose",'
+                                    '"confidence_score":0.92,'
+                                    '"reason_code":"explicit_dependency_chain"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
                 "coq-attempt-1",
                 [{"function": {"name": "unknown_tool", "arguments": {}}}],
             ),

@@ -27,6 +27,9 @@ from memmachine.retrieval_skill.common.skill_api import (
     QueryPolicy,
     SkillToolBase,
 )
+from memmachine.retrieval_skill.skills.route_policy import (
+    parse_route_decision_output_detailed,
+)
 from memmachine.retrieval_skill.skills.session_state import SkillToolCallRecord
 from memmachine.retrieval_skill.skills.spec_loader import load_skill_spec
 from memmachine.retrieval_skill.skills.tool_protocol import (
@@ -53,6 +56,7 @@ class SubSkillExecutionResult(BaseModel):
     episodes: list[Episode] = Field(default_factory=list)
     tool_calls: list[SkillToolCallRecord] = Field(default_factory=list)
     fallback_trigger_reason: str | None = None
+    llm_time: float = 0.0
     branch_total: int = 0
     branch_success_count: int = 0
     branch_failure_count: int = 0
@@ -63,11 +67,25 @@ class SubSkillExecutionResult(BaseModel):
 class _SplitBranchResult:
     query: str
     route: str
+    selected_skill: str
     status: str
     episodes: list[Episode]
     retry_count: int
+    llm_time: float = 0.0
     error: str = ""
     nested_tool_calls: list[SkillToolCallRecord] | None = None
+
+
+@dataclass(slots=True)
+class _SplitBranchSelection:
+    query: str
+    selected_skill: str
+    execution_skill: str
+    status: str
+    llm_time: float = 0.0
+    parse_error: str | None = None
+    selector_summary: str = ""
+    selector_tool_calls: list[SkillToolCallRecord] | None = None
 
 
 class SubSkillRunner:
@@ -206,18 +224,26 @@ class SubSkillRunner:
             parsed = None
 
         if isinstance(parsed, dict):
-            for key in ("sub_queries", "queries", "branch_queries"):
-                value = parsed.get(key)
-                if isinstance(value, list):
-                    candidate_queries.extend(
-                        item.strip()
-                        for item in value
-                        if isinstance(item, str) and item.strip()
-                    )
+            payloads: list[dict[str, object]] = [parsed]
+            wrapped_v1 = parsed.get("v1")
+            if isinstance(wrapped_v1, dict):
+                # Accept strict contract wrappers like {"v1": {...}}.
+                payloads.insert(0, wrapped_v1)
+
+            for payload in payloads:
+                for key in ("sub_queries", "queries", "branch_queries"):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        candidate_queries.extend(
+                            item.strip()
+                            for item in value
+                            if isinstance(item, str) and item.strip()
+                        )
             if not candidate_queries:
-                value = parsed.get("query")
-                if isinstance(value, str) and value.strip():
-                    candidate_queries.append(value.strip())
+                for payload in payloads:
+                    value = payload.get("query")
+                    if isinstance(value, str) and value.strip():
+                        candidate_queries.append(value.strip())
         elif isinstance(parsed, list):
             candidate_queries.extend(
                 item.strip()
@@ -263,6 +289,22 @@ class SubSkillRunner:
             return True
         # Possessive chain heuristic: "A's B's C" usually implies multi-hop.
         return lowered.count("'s") >= 2
+
+    @staticmethod
+    def _normalize_selected_skill(skill_name: str | None) -> str:
+        if not isinstance(skill_name, str):
+            return "direct_memory"
+        normalized = skill_name.strip().replace("-", "_").lower()
+        if normalized in {"coq", "split", "direct_memory"}:
+            return normalized
+        return "direct_memory"
+
+    @staticmethod
+    def _execution_skill_for_branch(selected_skill: str) -> str:
+        # Prevent recursive split-of-split loops at branch execution time.
+        if selected_skill == "split":
+            return "coq"
+        return selected_skill
 
     def _tool_calls_from_live_result(  # noqa: C901
         self,
@@ -436,6 +478,7 @@ class SubSkillRunner:
                 "episodes_returned": len(episodes),
                 "query": next_query,
                 "cached": cached,
+                "episodes_human_readable": episode_lines,
             }
             if cached_from_query:
                 response["cached_from_query"] = cached_from_query
@@ -492,83 +535,165 @@ class SubSkillRunner:
             query=query,
             memmachine_call_details=memmachine_call_details,
         )
+        result.llm_time = float(live_result.llm_time_seconds)
         result.summary = summary_from_tool or live_result.final_response.strip()
         result.episodes = self._dedupe_episodes(result.episodes)
         result.status = "success"
         return result
 
-    async def _execute_split_branch(
+    async def _select_split_branch(
         self,
         *,
         branch_query: str,
         policy: QueryPolicy,
         query: QueryParam,
         semaphore: asyncio.Semaphore,
+    ) -> _SplitBranchSelection:
+        async with semaphore:
+            fallback_skill = (
+                "coq" if self._branch_requires_coq(branch_query) else "direct_memory"
+            )
+            fallback_execution_skill = self._execution_skill_for_branch(fallback_skill)
+            selector_result: SubSkillExecutionResult | None = None
+            try:
+                selector_result = await self.run(
+                    skill_name="tool_select",
+                    policy=policy,
+                    query=self._query_with_override(query, branch_query),
+                )
+            except Exception:
+                return _SplitBranchSelection(
+                    query=branch_query,
+                    selected_skill=fallback_skill,
+                    execution_skill=fallback_execution_skill,
+                    status="fallback",
+                    parse_error="selector_exception",
+                    selector_summary="",
+                    selector_tool_calls=[],
+                )
+
+            if selector_result.status != "success":
+                return _SplitBranchSelection(
+                    query=branch_query,
+                    selected_skill=fallback_skill,
+                    execution_skill=fallback_execution_skill,
+                    status="fallback",
+                    llm_time=selector_result.llm_time,
+                    parse_error=(
+                        selector_result.fallback_trigger_reason
+                        or "selector_status_not_success"
+                    ),
+                    selector_summary=selector_result.summary,
+                    selector_tool_calls=selector_result.tool_calls,
+                )
+
+            decision, parse_error = parse_route_decision_output_detailed(
+                selector_result.summary
+            )
+            if decision is None:
+                return _SplitBranchSelection(
+                    query=branch_query,
+                    selected_skill=fallback_skill,
+                    execution_skill=fallback_execution_skill,
+                    status="fallback",
+                    llm_time=selector_result.llm_time,
+                    parse_error=parse_error or "selector_parse_failed",
+                    selector_summary=selector_result.summary,
+                    selector_tool_calls=selector_result.tool_calls,
+                )
+
+            selected_skill = self._normalize_selected_skill(decision.selected_skill)
+            return _SplitBranchSelection(
+                query=branch_query,
+                selected_skill=selected_skill,
+                execution_skill=self._execution_skill_for_branch(selected_skill),
+                status="success",
+                llm_time=selector_result.llm_time,
+                selector_summary=selector_result.summary,
+                selector_tool_calls=selector_result.tool_calls,
+            )
+
+    async def _execute_split_branch(
+        self,
+        *,
+        branch_selection: _SplitBranchSelection,
+        policy: QueryPolicy,
+        query: QueryParam,
+        semaphore: asyncio.Semaphore,
     ) -> _SplitBranchResult:
         async with semaphore:
             retry_count = 0
+            execution_skill = branch_selection.execution_skill
             for attempt in range(self._split_branch_retry_limit + 1):
                 try:
-                    next_param = self._query_with_override(query, branch_query)
-                    if self._branch_requires_coq(branch_query):
-                        coq_result = await self.run(
-                            skill_name="coq",
+                    next_param = self._query_with_override(query, branch_selection.query)
+                    if execution_skill in {"coq", "split"}:
+                        branch_skill_result = await self.run(
+                            skill_name=execution_skill,
                             policy=policy,
                             query=next_param,
                         )
-                        if coq_result.status != "success":
+                        if branch_skill_result.status != "success":
                             return _SplitBranchResult(
-                                query=branch_query,
-                                route="coq",
+                                query=branch_selection.query,
+                                route=execution_skill,
+                                selected_skill=branch_selection.selected_skill,
                                 status="failed",
                                 episodes=[],
                                 retry_count=retry_count,
+                                llm_time=branch_skill_result.llm_time,
                                 error=(
-                                    "coq branch failed "
-                                    f"(status={coq_result.status}, "
-                                    f"reason={coq_result.fallback_trigger_reason})"
+                                    f"{execution_skill} branch failed "
+                                    f"(status={branch_skill_result.status}, "
+                                    f"reason={branch_skill_result.fallback_trigger_reason})"
                                 ),
                             )
                         return _SplitBranchResult(
-                            query=branch_query,
-                            route="coq",
+                            query=branch_selection.query,
+                            route=execution_skill,
+                            selected_skill=branch_selection.selected_skill,
                             status="success",
-                            episodes=coq_result.episodes,
+                            episodes=branch_skill_result.episodes,
                             retry_count=retry_count,
-                            nested_tool_calls=coq_result.tool_calls,
+                            llm_time=branch_skill_result.llm_time,
+                            nested_tool_calls=branch_skill_result.tool_calls,
                         )
 
                     episodes, _metrics = await self._memory_tool.do_query(
                         policy, next_param
                     )
                     return _SplitBranchResult(
-                        query=branch_query,
+                        query=branch_selection.query,
                         route="direct_memory",
+                        selected_skill=branch_selection.selected_skill,
                         status="success",
                         episodes=self._dedupe_episodes(episodes),
                         retry_count=retry_count,
+                        llm_time=0.0,
                     )
                 except Exception as err:
                     if attempt < self._split_branch_retry_limit:
                         retry_count += 1
                         continue
                     return _SplitBranchResult(
-                        query=branch_query,
-                        route="coq"
-                        if self._branch_requires_coq(branch_query)
-                        else "direct_memory",
+                        query=branch_selection.query,
+                        route=execution_skill,
+                        selected_skill=branch_selection.selected_skill,
                         status="failed",
                         episodes=[],
                         retry_count=retry_count,
+                        llm_time=0.0,
                         error=str(err),
                     )
 
         return _SplitBranchResult(
-            query=branch_query,
-            route="direct_memory",
+            query=branch_selection.query,
+            route=execution_skill,
+            selected_skill=branch_selection.selected_skill,
             status="failed",
             episodes=[],
             retry_count=retry_count,
+            llm_time=0.0,
             error="split branch execution exited unexpectedly",
         )
 
@@ -590,15 +715,27 @@ class SubSkillRunner:
             planner_result.summary, query.query
         )
 
-        semaphore = asyncio.Semaphore(self._split_parallel_cap)
-        branch_tasks = [
-            self._execute_split_branch(
+        selector_semaphore = asyncio.Semaphore(self._split_parallel_cap)
+        selector_tasks = [
+            self._select_split_branch(
                 branch_query=branch_query,
                 policy=policy,
                 query=query,
-                semaphore=semaphore,
+                semaphore=selector_semaphore,
             )
             for branch_query in branch_queries
+        ]
+        branch_selections = await asyncio.gather(*selector_tasks)
+
+        execution_semaphore = asyncio.Semaphore(self._split_parallel_cap)
+        branch_tasks = [
+            self._execute_split_branch(
+                branch_selection=branch_selection,
+                policy=policy,
+                query=query,
+                semaphore=execution_semaphore,
+            )
+            for branch_selection in branch_selections
         ]
         branch_results = await asyncio.gather(*branch_tasks)
 
@@ -609,13 +746,19 @@ class SubSkillRunner:
             summary=planner_result.summary,
             episodes=list(planner_result.episodes),
             tool_calls=list(planner_result.tool_calls),
+            llm_time=planner_result.llm_time,
         )
 
         branch_success_count = 0
         branch_failure_count = 0
         branch_retry_count = 0
-        for branch_index, branch_result in enumerate(branch_results, start=1):
+        for branch_index, (branch_selection, branch_result) in enumerate(
+            zip(branch_selections, branch_results, strict=True),
+            start=1,
+        ):
             branch_retry_count += branch_result.retry_count
+            result.llm_time += branch_selection.llm_time
+            result.llm_time += branch_result.llm_time
             if branch_result.status == "success":
                 branch_success_count += 1
                 result.episodes.extend(branch_result.episodes)
@@ -625,11 +768,53 @@ class SubSkillRunner:
             result.tool_calls.append(
                 SkillToolCallRecord(
                     step=len(result.tool_calls) + 1,
-                    tool_name="split_branch",
+                    tool_name="split_branch_selection",
+                    arguments={
+                        "branch_index": branch_index,
+                        "query": branch_selection.query,
+                    },
+                    status=(
+                        "success"
+                        if branch_selection.status == "success"
+                        else "fallback"
+                    ),
+                    result_summary=(
+                        f"selected_skill={branch_selection.selected_skill}; "
+                        f"execution_skill={branch_selection.execution_skill}"
+                    ),
+                    raw_result={
+                        "selected_skill": branch_selection.selected_skill,
+                        "execution_skill": branch_selection.execution_skill,
+                        "selector_status": branch_selection.status,
+                        "selector_parse_error": branch_selection.parse_error,
+                        "selector_summary": branch_selection.selector_summary[:400],
+                    },
+                )
+            )
+            for selector_record in branch_selection.selector_tool_calls or []:
+                result.tool_calls.append(
+                    SkillToolCallRecord(
+                        step=len(result.tool_calls) + 1,
+                        tool_name=f"split_branch_selection.{selector_record.tool_name}",
+                        arguments={
+                            "branch_index": branch_index,
+                            **selector_record.arguments,
+                        },
+                        status=selector_record.status,
+                        result_summary=selector_record.result_summary,
+                        raw_result=selector_record.raw_result,
+                    )
+                )
+
+            result.tool_calls.append(
+                SkillToolCallRecord(
+                    step=len(result.tool_calls) + 1,
+                    tool_name="split_branch_execution",
                     arguments={
                         "branch_index": branch_index,
                         "query": branch_result.query,
-                        "route": branch_result.route,
+                        "selected_skill": branch_result.selected_skill,
+                        "execution_skill": branch_result.route,
                     },
                     status=branch_result.status,
                     result_summary=(
@@ -638,9 +823,17 @@ class SubSkillRunner:
                         else f"error={branch_result.error[:160]}"
                     ),
                     raw_result=(
-                        {"episodes_returned": len(branch_result.episodes)}
+                        {
+                            "episodes_returned": len(branch_result.episodes),
+                            "selected_skill": branch_result.selected_skill,
+                            "execution_skill": branch_result.route,
+                        }
                         if branch_result.status == "success"
-                        else {"error": branch_result.error[:160]}
+                        else {
+                            "error": branch_result.error[:160],
+                            "selected_skill": branch_result.selected_skill,
+                            "execution_skill": branch_result.route,
+                        }
                     ),
                 )
             )
@@ -648,7 +841,7 @@ class SubSkillRunner:
                 result.tool_calls.append(
                     SkillToolCallRecord(
                         step=len(result.tool_calls) + 1,
-                        tool_name=f"split_branch.{nested_record.tool_name}",
+                        tool_name=f"split_branch_execution.{nested_record.tool_name}",
                         arguments={
                             "branch_index": branch_index,
                             **nested_record.arguments,

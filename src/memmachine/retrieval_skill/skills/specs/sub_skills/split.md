@@ -27,6 +27,7 @@ Transform one query into either:
 - the original query unchanged,
 
 so runtime can execute branches in parallel when splitting is justified.
+Branch execution routing is decided by `tool_select` per branch query.
 
 ## Rules
 

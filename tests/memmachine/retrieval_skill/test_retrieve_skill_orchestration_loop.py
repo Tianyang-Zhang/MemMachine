@@ -365,6 +365,42 @@ async def test_split_sub_skill_records_branch_metrics_and_applies_final_rerank(
                 ],
             ),
             (
+                "branch selector 1",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"direct_memory",'
+                                    '"selected_route":"direct_memory",'
+                                    '"confidence_score":0.89,'
+                                    '"reason_code":"single_hop_direct"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
+                "branch selector 2",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"coq",'
+                                    '"selected_route":"decompose",'
+                                    '"confidence_score":0.91,'
+                                    '"reason_code":"explicit_dependency_chain"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
                 "coq branch",
                 [
                     {
@@ -408,13 +444,130 @@ async def test_split_sub_skill_records_branch_metrics_and_applies_final_rerank(
     nested_memmachine_calls = [
         call
         for call in sub_skill_runs[0]["tool_calls"]
-        if call["tool_name"] == "split_branch.memmachine_search"
+        if call["tool_name"] == "split_branch_execution.memmachine_search"
     ]
     assert len(nested_memmachine_calls) == 1
     nested_lines = nested_memmachine_calls[0]["arguments"]["episodes_human_readable"]
     assert isinstance(nested_lines, list)
     assert len(nested_lines) == 1
     assert "split evidence c" in nested_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
+    query_policy: QueryPolicy,
+) -> None:
+    branch_a_query = "When did Fleetwood Sheppard die?"
+    branch_b_query = "When did George William Whitaker die?"
+    branch_a = _build_episode("split-v1-a", "Fleetwood branch evidence")
+    branch_b = _build_episode("split-v1-b", "Whitaker branch evidence")
+    memory = FakeEpisodicMemory(
+        {
+            branch_a_query: [branch_a],
+            branch_b_query: [branch_b],
+        }
+    )
+    model = ScriptedLanguageModel(
+        [
+            (
+                "top-level",
+                [
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "split",
+                                "query": "Who died first?",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {"final_response": "done"},
+                        }
+                    },
+                ],
+            ),
+            (
+                "split planner",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"v1":{"sub_queries":['
+                                    '"When did Fleetwood Sheppard die?",'
+                                    '"When did George William Whitaker die?"],'
+                                    '"reason_code":"derived_intent_rewritten",'
+                                    '"reason_note":"converted comparison into two fact '
+                                    'retrievals","line_count":2}}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
+                "branch selector 1",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"direct_memory",'
+                                    '"selected_route":"direct_memory",'
+                                    '"confidence_score":0.93,'
+                                    '"reason_code":"single_hop_direct"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
+                "branch selector 2",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"direct_memory",'
+                                    '"selected_route":"direct_memory",'
+                                    '"confidence_score":0.94,'
+                                    '"reason_code":"single_hop_direct"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    _episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert metrics["branch_total"] == 2
+    assert metrics["branch_success_count"] == 2
+    assert branch_a_query in memory.queries
+    assert branch_b_query in memory.queries
+    sub_skill_runs = metrics["orchestrator_sub_skill_runs"]
+    assert isinstance(sub_skill_runs, list)
+    split_calls = [
+        call
+        for call in sub_skill_runs[0]["tool_calls"]
+        if call["tool_name"] == "split_branch_selection"
+    ]
+    selected_queries = [call["arguments"]["query"] for call in split_calls]
+    assert branch_a_query in selected_queries
+    assert branch_b_query in selected_queries
 
 
 @pytest.mark.asyncio
@@ -504,3 +657,151 @@ async def test_coq_sub_skill_reuses_cached_results_for_near_duplicate_queries(
     assert memmachine_calls[0]["raw_result"]["cached"] is False
     assert memmachine_calls[1]["raw_result"]["cached"] is True
     assert memmachine_calls[1]["raw_result"]["cached_from_query"] == q1
+
+
+@pytest.mark.asyncio
+async def test_top_level_coq_spawn_overrides_rewritten_query_to_original(
+    query_policy: QueryPolicy,
+) -> None:
+    original_query = "Where did Prince Gustav of Thurn and Taxis (1848-1914)'s mother die?"
+    rewritten_query = (
+        "Decompose: 1) Identify the mother of Prince Gustav of Thurn and Taxis "
+        "(1848-1914). 2) Find where she died."
+    )
+    original_episode = _build_episode(
+        "coq-original",
+        "Princess Mathilde Sophie ... died in Obermais, Meran.",
+    )
+    rewritten_episode = _build_episode(
+        "coq-rewritten",
+        "This should not be returned if coq query override works.",
+    )
+    memory = FakeEpisodicMemory(
+        {
+            original_query: [original_episode],
+            rewritten_query: [rewritten_episode],
+        }
+    )
+    model = ScriptedLanguageModel(
+        [
+            (
+                "top-level",
+                [
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "coq",
+                                "query": rewritten_query,
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {"final_response": "done"},
+                        }
+                    },
+                ],
+            ),
+            (
+                "coq",
+                [
+                    {
+                        "function": {
+                            "name": "memmachine_search",
+                            "arguments": {},
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"is_sufficient":true,'
+                                    '"evidence_indices":[0],'
+                                    '"new_query":"Where did Prince Gustav of Thurn and '
+                                    'Taxis (1848-1914)\'s mother die?",'
+                                    '"confidence_score":0.95,'
+                                    '"reason_code":"sufficient_cumulative_evidence",'
+                                    '"reason_note":"mother and death place found"}'
+                                )
+                            },
+                        }
+                    },
+                ],
+            ),
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query=original_query, limit=5, memory=memory),
+    )
+
+    assert [item.uid for item in episodes] == ["coq-original"]
+    assert memory.queries == [original_query]
+    sub_runs = metrics["orchestrator_sub_skill_runs"]
+    assert isinstance(sub_runs, list)
+    assert sub_runs[0]["skill_name"] == "coq"
+    assert sub_runs[0]["query"] == original_query
+    trace = metrics["orchestrator_trace"]
+    assert isinstance(trace, dict)
+    assert any(
+        event["event_type"] == "coq_query_overridden"
+        for event in trace.get("events", [])
+        if isinstance(event, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_time_accumulates_top_level_and_sub_skill_sessions(
+    query_policy: QueryPolicy,
+) -> None:
+    sub_episode = _build_episode("llm-time-sub", "sub evidence")
+    memory = FakeEpisodicMemory({"branch query": [sub_episode]})
+    model = ScriptedLanguageModel(
+        [
+            (
+                "top-level",
+                [
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "direct_memory",
+                                "query": "branch query",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {"final_response": "done"},
+                        }
+                    },
+                ],
+            ),
+            (
+                "sub-skill",
+                [
+                    {
+                        "function": {
+                            "name": "memmachine_search",
+                            "arguments": {"query": "branch query"},
+                        }
+                    }
+                ],
+            ),
+        ]
+    )
+    model.session_llm_times = [0.14, 0.31]
+    retrieve_skill = _build_skill(model)
+
+    _episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert metrics["llm_time"] == pytest.approx(0.45)

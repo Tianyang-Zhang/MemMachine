@@ -34,24 +34,35 @@ searches.
 1. Maintain one global orchestrator state through completion.
 2. Start by spawning `tool_select` unless direct memory search is already
    clearly sufficient.
-3. Treat selector summary as strict contract:
+3. Run `tool_select` once per top-level query unless runtime explicitly asks
+   for one retry after a malformed selector summary.
+4. Treat selector summary as strict contract:
    - `selected_skill`: `direct_memory` | `coq` | `split`
    - `selected_route`: `direct_memory` | `decompose`
    - `confidence_score`, `reason_code`, optional `reason_note`
-4. Pass-through behavior:
+5. CoQ handoff contract:
+   - If selector chooses `coq`, spawn `coq` with the original top-level query
+     text exactly.
+   - Do not pass pre-decomposed planner text (for example, no
+     `Decompose: 1)... 2)...` payloads).
+   - `coq` owns decomposition, hop planning, and sufficiency decisions.
+6. Pass-through behavior:
    - For straightforward/non-multi-hop queries, direct memory search is valid
      and preferred.
-5. Safety behavior:
+7. Safety behavior:
    - If selector output is malformed, runtime retries selector once.
    - If selector stays malformed after retry, runtime falls back to direct
      memory.
    - If selector confidence is low, runtime falls back to direct memory.
-6. Decomposition behavior:
+8. Decomposition behavior:
    - Use `coq` for sequential multi-hop decomposition.
    - Use `split` for branch decomposition.
-   - `split` branches may require `coq` at branch level.
-7. Avoid repeated identical actions unless previous attempt clearly failed.
-8. Finalize only when evidence is sufficient or fallback guardrails require safe
+   - After `split` emits branch queries, route each branch through
+     `tool_select` before execution.
+   - Branches classified as `coq` should execute with `coq`; branches classified
+     as `direct_memory` should execute with direct memory.
+9. Avoid repeated identical actions unless previous attempt clearly failed.
+10. Finalize only when evidence is sufficient or fallback guardrails require safe
    termination.
 
 ## Actions

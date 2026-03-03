@@ -18,6 +18,7 @@ class ScriptedSkillSessionModel:
 
     def __init__(self, model: LanguageModel) -> None:
         self._model = model
+        self._session_call_count = 0
 
     async def run_live_session(
         self,
@@ -43,6 +44,17 @@ class ScriptedSkillSessionModel:
         if len(calls) > max_turns:
             raise SkillSessionLimitError("Skill session exceeded max_turns.")
 
+        llm_time_seconds = 0.0
+        raw_times = getattr(self._model, "session_llm_times", None)
+        if isinstance(raw_times, list):
+            if self._session_call_count < len(raw_times):
+                raw_value = raw_times[self._session_call_count]
+                if isinstance(raw_value, int | float):
+                    llm_time_seconds = float(raw_value)
+        elif isinstance(raw_times, int | float):
+            llm_time_seconds = float(raw_times)
+        self._session_call_count += 1
+
         executions: list[SkillToolExecution] = []
         for raw in calls:
             call_id, name, arguments = self._parse_call(raw)
@@ -67,6 +79,7 @@ class ScriptedSkillSessionModel:
             tool_executions=executions,
             llm_input_tokens=0,
             llm_output_tokens=0,
+            llm_time_seconds=llm_time_seconds,
             turn_count=1,
         )
 
@@ -100,6 +113,10 @@ class ScriptedSkillSessionModel:
         if isinstance(raw_arguments, str):
             parsed = json.loads(raw_arguments)
             if not isinstance(parsed, dict):
-                raise SkillToolCallFormatError("Function arguments must decode to object.")
+                raise SkillToolCallFormatError(
+                    "Function arguments must decode to object."
+                )
             return {str(key): value for key, value in parsed.items()}
-        raise SkillToolCallFormatError("Function call arguments must be object or JSON string.")
+        raise SkillToolCallFormatError(
+            "Function call arguments must be object or JSON string."
+        )

@@ -327,15 +327,39 @@ class RetrieveSkill(SkillToolBase):
             )
             return None
 
-        aggregated_metrics["selected_route"] = decision.selected_route
-        aggregated_metrics["selected_skill"] = decision.selected_skill
-        aggregated_metrics["confidence_score"] = decision.confidence_score
-        aggregated_metrics["reason_code"] = decision.reason_code
-        aggregated_metrics["reason_note"] = decision.reason_note
-        if decision.fallback_trigger_reason:
-            aggregated_metrics["selector_fallback_trigger_reason"] = (
-                decision.fallback_trigger_reason
-            )
+        decision_payload = decision.model_dump(mode="json")
+        selector_decisions = aggregated_metrics.get("selector_decisions")
+        if not isinstance(selector_decisions, list):
+            selector_decisions = []
+            aggregated_metrics["selector_decisions"] = selector_decisions
+        selector_decisions.append(decision_payload)
+
+        has_primary_selection = (
+            isinstance(aggregated_metrics.get("selected_route"), str)
+            and bool(str(aggregated_metrics.get("selected_route")).strip())
+            and isinstance(aggregated_metrics.get("selected_skill"), str)
+            and bool(str(aggregated_metrics.get("selected_skill")).strip())
+        )
+        if not has_primary_selection:
+            aggregated_metrics["selected_route"] = decision.selected_route
+            aggregated_metrics["selected_skill"] = decision.selected_skill
+            aggregated_metrics["confidence_score"] = decision.confidence_score
+            aggregated_metrics["reason_code"] = decision.reason_code
+            aggregated_metrics["reason_note"] = decision.reason_note
+            if decision.fallback_trigger_reason:
+                aggregated_metrics["selector_fallback_trigger_reason"] = (
+                    decision.fallback_trigger_reason
+                )
+        else:
+            aggregated_metrics["latest_selected_route"] = decision.selected_route
+            aggregated_metrics["latest_selected_skill"] = decision.selected_skill
+            aggregated_metrics["latest_confidence_score"] = decision.confidence_score
+            aggregated_metrics["latest_reason_code"] = decision.reason_code
+            aggregated_metrics["latest_reason_note"] = decision.reason_note
+            if decision.fallback_trigger_reason:
+                aggregated_metrics["latest_selector_fallback_trigger_reason"] = (
+                    decision.fallback_trigger_reason
+                )
         session.record_event(
             actor="top-level",
             event_type="tool_select_decision_recorded",
@@ -538,7 +562,22 @@ class RetrieveSkill(SkillToolBase):
                         fallback_reason="max_branches_exceeded",
                     )
 
+                normalized_target_skill = (
+                    action.skill_name.replace("-", "_").lower()
+                )
                 sub_query = action.query or query.query
+                if normalized_target_skill == "coq":
+                    requested_query = sub_query
+                    sub_query = query.query
+                    if requested_query.strip() != query.query.strip():
+                        session.record_event(
+                            actor="top-level",
+                            event_type="coq_query_overridden",
+                            detail=(
+                                "CoQ sub-skill query overridden to original query; "
+                                f"requested={requested_query[:160]}"
+                            ),
+                        )
 
                 async def _run_sub_skill_once() -> SubSkillExecutionResult:
                     nonlocal guardrail_retry_count
@@ -595,6 +634,9 @@ class RetrieveSkill(SkillToolBase):
                             )
 
                 sub_result = await _run_sub_skill_once()
+                aggregated_metrics["llm_time"] = float(
+                    aggregated_metrics.get("llm_time", 0.0)
+                ) + float(sub_result.llm_time)
                 session.merge_episodes(sub_result.episodes)
                 decision = self._record_tool_select_metrics(
                     session=session,
@@ -612,6 +654,9 @@ class RetrieveSkill(SkillToolBase):
                             detail="Retrying tool_select after malformed summary.",
                         )
                         sub_result_retry = await _run_sub_skill_once()
+                        aggregated_metrics["llm_time"] = float(
+                            aggregated_metrics.get("llm_time", 0.0)
+                        ) + float(sub_result_retry.llm_time)
                         session.merge_episodes(sub_result_retry.episodes)
                         decision = self._record_tool_select_metrics(
                             session=session,
@@ -860,6 +905,9 @@ class RetrieveSkill(SkillToolBase):
                 max_turns=self._spec.max_steps,
                 timeout_seconds=float(self._global_timeout_seconds),
             )
+            aggregated_metrics["llm_time"] = float(
+                aggregated_metrics.get("llm_time", 0.0)
+            ) + float(session_result.llm_time_seconds)
 
             if not session.completed:
                 if not session.tool_calls:
