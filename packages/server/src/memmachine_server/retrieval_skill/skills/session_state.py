@@ -42,6 +42,10 @@ class SubSkillRunRecord(BaseModel):
     status: str
     fallback_trigger_reason: str | None = None
     tool_calls: list[SkillToolCallRecord] = Field(default_factory=list)
+    llm_call_count: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
+    llm_time: float = 0.0
     episodes_returned: int = 0
     branch_total: int = 0
     branch_success_count: int = 0
@@ -127,6 +131,10 @@ class TopLevelSkillSessionState(BaseModel):
         status: str,
         fallback_trigger_reason: str | None = None,
         tool_calls: list[SkillToolCallRecord] | None = None,
+        llm_call_count: int = 0,
+        llm_input_tokens: int = 0,
+        llm_output_tokens: int = 0,
+        llm_time: float = 0.0,
         episodes_returned: int = 0,
         branch_total: int = 0,
         branch_success_count: int = 0,
@@ -142,6 +150,10 @@ class TopLevelSkillSessionState(BaseModel):
                 status=status,
                 fallback_trigger_reason=fallback_trigger_reason,
                 tool_calls=tool_calls or [],
+                llm_call_count=llm_call_count,
+                llm_input_tokens=llm_input_tokens,
+                llm_output_tokens=llm_output_tokens,
+                llm_time=llm_time,
                 episodes_returned=episodes_returned,
                 branch_total=branch_total,
                 branch_success_count=branch_success_count,

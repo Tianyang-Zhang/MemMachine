@@ -20,7 +20,7 @@ class ScriptedSkillSessionModel:
         self._model = model
         self._session_call_count = 0
 
-    async def run_live_session(
+    async def run_live_session(  # noqa: C901
         self,
         *,
         system_prompt: str,
@@ -44,15 +44,37 @@ class ScriptedSkillSessionModel:
         if len(calls) > max_turns:
             raise SkillSessionLimitError("Skill session exceeded max_turns.")
 
+        call_index = self._session_call_count
         llm_time_seconds = 0.0
         raw_times = getattr(self._model, "session_llm_times", None)
         if isinstance(raw_times, list):
-            if self._session_call_count < len(raw_times):
-                raw_value = raw_times[self._session_call_count]
+            if call_index < len(raw_times):
+                raw_value = raw_times[call_index]
                 if isinstance(raw_value, int | float):
                     llm_time_seconds = float(raw_value)
         elif isinstance(raw_times, int | float):
             llm_time_seconds = float(raw_times)
+
+        llm_input_tokens = 0
+        raw_input_tokens = getattr(self._model, "session_llm_input_tokens", None)
+        if isinstance(raw_input_tokens, list):
+            if call_index < len(raw_input_tokens):
+                raw_value = raw_input_tokens[call_index]
+                if isinstance(raw_value, int | float):
+                    llm_input_tokens = int(raw_value)
+        elif isinstance(raw_input_tokens, int | float):
+            llm_input_tokens = int(raw_input_tokens)
+
+        llm_output_tokens = 0
+        raw_output_tokens = getattr(self._model, "session_llm_output_tokens", None)
+        if isinstance(raw_output_tokens, list):
+            if call_index < len(raw_output_tokens):
+                raw_value = raw_output_tokens[call_index]
+                if isinstance(raw_value, int | float):
+                    llm_output_tokens = int(raw_value)
+        elif isinstance(raw_output_tokens, int | float):
+            llm_output_tokens = int(raw_output_tokens)
+
         self._session_call_count += 1
 
         executions: list[SkillToolExecution] = []
@@ -77,8 +99,8 @@ class ScriptedSkillSessionModel:
             final_response=(output or "").strip(),
             raw_model_output=output or "",
             tool_executions=executions,
-            llm_input_tokens=0,
-            llm_output_tokens=0,
+            llm_input_tokens=llm_input_tokens,
+            llm_output_tokens=llm_output_tokens,
             llm_time_seconds=llm_time_seconds,
             turn_count=1,
         )

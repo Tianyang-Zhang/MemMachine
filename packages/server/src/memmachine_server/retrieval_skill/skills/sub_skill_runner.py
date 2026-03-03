@@ -57,6 +57,9 @@ class SubSkillExecutionResult(BaseModel):
     tool_calls: list[SkillToolCallRecord] = Field(default_factory=list)
     fallback_trigger_reason: str | None = None
     llm_time: float = 0.0
+    llm_call_count: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
     memory_search_called: int = 0
     memory_retrieval_time: float = 0.0
     branch_total: int = 0
@@ -74,6 +77,9 @@ class _SplitBranchResult:
     episodes: list[Episode]
     retry_count: int
     llm_time: float = 0.0
+    llm_call_count: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
     memory_search_called: int = 0
     memory_retrieval_time: float = 0.0
     error: str = ""
@@ -87,6 +93,9 @@ class _SplitBranchSelection:
     execution_skill: str
     status: str
     llm_time: float = 0.0
+    llm_call_count: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
     parse_error: str | None = None
     selector_summary: str = ""
     selector_tool_calls: list[SkillToolCallRecord] | None = None
@@ -579,6 +588,9 @@ class SubSkillRunner:
             memmachine_call_details=memmachine_call_details,
         )
         result.llm_time = float(live_result.llm_time_seconds)
+        result.llm_call_count = int(live_result.turn_count)
+        result.llm_input_tokens = int(live_result.llm_input_tokens)
+        result.llm_output_tokens = int(live_result.llm_output_tokens)
         result.memory_search_called = memory_search_called
         result.memory_retrieval_time = memory_retrieval_time
         result.summary = summary_from_tool or live_result.final_response.strip()
@@ -602,6 +614,9 @@ class SubSkillRunner:
             selector_result: SubSkillExecutionResult | None = None
             selector_parse_error: str | None = None
             total_selector_llm_time = 0.0
+            total_selector_llm_call_count = 0
+            total_selector_llm_input_tokens = 0
+            total_selector_llm_output_tokens = 0
             max_selector_attempts = 2
 
             for _attempt in range(max_selector_attempts):
@@ -616,6 +631,9 @@ class SubSkillRunner:
                     continue
 
                 total_selector_llm_time += selector_result.llm_time
+                total_selector_llm_call_count += selector_result.llm_call_count
+                total_selector_llm_input_tokens += selector_result.llm_input_tokens
+                total_selector_llm_output_tokens += selector_result.llm_output_tokens
                 if selector_result.status != "success":
                     selector_parse_error = (
                         selector_result.fallback_trigger_reason
@@ -637,6 +655,9 @@ class SubSkillRunner:
                     execution_skill=self._execution_skill_for_branch(selected_skill),
                     status="success",
                     llm_time=total_selector_llm_time,
+                    llm_call_count=total_selector_llm_call_count,
+                    llm_input_tokens=total_selector_llm_input_tokens,
+                    llm_output_tokens=total_selector_llm_output_tokens,
                     selector_summary=selector_result.summary,
                     selector_tool_calls=selector_result.tool_calls,
                 )
@@ -647,6 +668,9 @@ class SubSkillRunner:
                 execution_skill=fallback_execution_skill,
                 status="fallback",
                 llm_time=total_selector_llm_time,
+                llm_call_count=total_selector_llm_call_count,
+                llm_input_tokens=total_selector_llm_input_tokens,
+                llm_output_tokens=total_selector_llm_output_tokens,
                 parse_error=selector_parse_error or "selector_unclassifiable",
                 selector_summary=(
                     selector_result.summary if selector_result is not None else ""
@@ -685,6 +709,9 @@ class SubSkillRunner:
                                 episodes=[],
                                 retry_count=retry_count,
                                 llm_time=branch_skill_result.llm_time,
+                                llm_call_count=branch_skill_result.llm_call_count,
+                                llm_input_tokens=branch_skill_result.llm_input_tokens,
+                                llm_output_tokens=branch_skill_result.llm_output_tokens,
                                 memory_search_called=(
                                     branch_skill_result.memory_search_called
                                 ),
@@ -705,6 +732,9 @@ class SubSkillRunner:
                             episodes=branch_skill_result.episodes,
                             retry_count=retry_count,
                             llm_time=branch_skill_result.llm_time,
+                            llm_call_count=branch_skill_result.llm_call_count,
+                            llm_input_tokens=branch_skill_result.llm_input_tokens,
+                            llm_output_tokens=branch_skill_result.llm_output_tokens,
                             memory_search_called=(
                                 branch_skill_result.memory_search_called
                             ),
@@ -725,6 +755,9 @@ class SubSkillRunner:
                         episodes=self._dedupe_episodes(episodes),
                         retry_count=retry_count,
                         llm_time=0.0,
+                        llm_call_count=0,
+                        llm_input_tokens=0,
+                        llm_output_tokens=0,
                         memory_search_called=self._metric_as_int(
                             memory_metrics,
                             "memory_search_called",
@@ -746,6 +779,9 @@ class SubSkillRunner:
                         episodes=[],
                         retry_count=retry_count,
                         llm_time=0.0,
+                        llm_call_count=0,
+                        llm_input_tokens=0,
+                        llm_output_tokens=0,
                         error=str(err),
                     )
 
@@ -757,6 +793,9 @@ class SubSkillRunner:
             episodes=[],
             retry_count=retry_count,
             llm_time=0.0,
+            llm_call_count=0,
+            llm_input_tokens=0,
+            llm_output_tokens=0,
             error="split branch execution exited unexpectedly",
         )
 
@@ -810,6 +849,9 @@ class SubSkillRunner:
             episodes=list(planner_result.episodes),
             tool_calls=list(planner_result.tool_calls),
             llm_time=planner_result.llm_time,
+            llm_call_count=planner_result.llm_call_count,
+            llm_input_tokens=planner_result.llm_input_tokens,
+            llm_output_tokens=planner_result.llm_output_tokens,
             memory_search_called=planner_result.memory_search_called,
             memory_retrieval_time=planner_result.memory_retrieval_time,
         )
@@ -824,6 +866,12 @@ class SubSkillRunner:
             branch_retry_count += branch_result.retry_count
             result.llm_time += branch_selection.llm_time
             result.llm_time += branch_result.llm_time
+            result.llm_call_count += branch_selection.llm_call_count
+            result.llm_call_count += branch_result.llm_call_count
+            result.llm_input_tokens += branch_selection.llm_input_tokens
+            result.llm_input_tokens += branch_result.llm_input_tokens
+            result.llm_output_tokens += branch_selection.llm_output_tokens
+            result.llm_output_tokens += branch_result.llm_output_tokens
             result.memory_search_called += branch_result.memory_search_called
             result.memory_retrieval_time += branch_result.memory_retrieval_time
             if branch_result.status == "success":

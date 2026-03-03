@@ -588,6 +588,12 @@ class RetrieveSkill(SkillToolBase):
         metrics["fallback_trigger_reason"] = reason
         metrics["skill_contract_error_code"] = code
         metrics["top_level_session_invocation_count"] = 1
+        metrics.setdefault("llm_call_count", 0)
+        metrics.setdefault("input_token", 0)
+        metrics.setdefault("output_token", 0)
+        metrics.setdefault("tool_select_llm_call_count", 0)
+        metrics.setdefault("tool_select_input_token", 0)
+        metrics.setdefault("tool_select_output_token", 0)
         final_episodes, rerank_applied = await self._finalize_episodes(
             query=query,
             episodes=session.merged_episodes,
@@ -742,11 +748,24 @@ class RetrieveSkill(SkillToolBase):
                 ) + float(sub_result.llm_time)
                 self._update_perf_metrics(
                     {
+                        "llm_call_count": sub_result.llm_call_count,
+                        "input_token": sub_result.llm_input_tokens,
+                        "output_token": sub_result.llm_output_tokens,
                         "memory_search_called": sub_result.memory_search_called,
                         "memory_retrieval_time": sub_result.memory_retrieval_time,
                     },
                     aggregated_metrics,
                 )
+                normalized_skill = sub_result.skill_name.replace("-", "_").lower()
+                if normalized_skill in {"tool_select", "select_skill"}:
+                    self._update_perf_metrics(
+                        {
+                            "tool_select_llm_call_count": sub_result.llm_call_count,
+                            "tool_select_input_token": sub_result.llm_input_tokens,
+                            "tool_select_output_token": sub_result.llm_output_tokens,
+                        },
+                        aggregated_metrics,
+                    )
                 session.merge_episodes(sub_result.episodes)
                 decision = self._record_tool_select_metrics(
                     session=session,
@@ -755,7 +774,6 @@ class RetrieveSkill(SkillToolBase):
                     summary=sub_result.summary,
                 )
 
-                normalized_skill = sub_result.skill_name.replace("-", "_").lower()
                 if normalized_skill in {"tool_select", "select_skill"}:
                     if decision is None:
                         session.record_event(
@@ -769,11 +787,28 @@ class RetrieveSkill(SkillToolBase):
                         ) + float(sub_result_retry.llm_time)
                         self._update_perf_metrics(
                             {
+                                "llm_call_count": sub_result_retry.llm_call_count,
+                                "input_token": sub_result_retry.llm_input_tokens,
+                                "output_token": sub_result_retry.llm_output_tokens,
                                 "memory_search_called": (
                                     sub_result_retry.memory_search_called
                                 ),
                                 "memory_retrieval_time": (
                                     sub_result_retry.memory_retrieval_time
+                                ),
+                            },
+                            aggregated_metrics,
+                        )
+                        self._update_perf_metrics(
+                            {
+                                "tool_select_llm_call_count": (
+                                    sub_result_retry.llm_call_count
+                                ),
+                                "tool_select_input_token": (
+                                    sub_result_retry.llm_input_tokens
+                                ),
+                                "tool_select_output_token": (
+                                    sub_result_retry.llm_output_tokens
                                 ),
                             },
                             aggregated_metrics,
@@ -841,6 +876,10 @@ class RetrieveSkill(SkillToolBase):
                     status=sub_result.status,
                     fallback_trigger_reason=sub_result.fallback_trigger_reason,
                     tool_calls=sub_result.tool_calls,
+                    llm_call_count=sub_result.llm_call_count,
+                    llm_input_tokens=sub_result.llm_input_tokens,
+                    llm_output_tokens=sub_result.llm_output_tokens,
+                    llm_time=sub_result.llm_time,
                     episodes_returned=len(sub_result.episodes),
                     branch_total=sub_result.branch_total,
                     branch_success_count=sub_result.branch_success_count,
@@ -1051,6 +1090,17 @@ class RetrieveSkill(SkillToolBase):
             aggregated_metrics["llm_time"] = float(
                 aggregated_metrics.get("llm_time", 0.0)
             ) + float(session_result.llm_time_seconds)
+            self._update_perf_metrics(
+                {
+                    "llm_call_count": int(session_result.turn_count),
+                    "input_token": int(session_result.llm_input_tokens),
+                    "output_token": int(session_result.llm_output_tokens),
+                    "top_level_input_token": int(session_result.llm_input_tokens),
+                    "top_level_output_token": int(session_result.llm_output_tokens),
+                    "top_level_llm_call_count": int(session_result.turn_count),
+                },
+                aggregated_metrics,
+            )
 
             if not session.completed:
                 if not session.tool_calls:
@@ -1095,6 +1145,12 @@ class RetrieveSkill(SkillToolBase):
             metrics["skill_name"] = self._spec.name
             metrics["top_level_session_invocation_count"] = 1
             metrics["top_level_session_turn_count"] = session_result.turn_count
+            metrics.setdefault("llm_call_count", 0)
+            metrics.setdefault("input_token", 0)
+            metrics.setdefault("output_token", 0)
+            metrics.setdefault("tool_select_llm_call_count", 0)
+            metrics.setdefault("tool_select_input_token", 0)
+            metrics.setdefault("tool_select_output_token", 0)
             metrics.setdefault("branch_total", 0)
             metrics.setdefault("branch_success_count", 0)
             metrics.setdefault("branch_failure_count", 0)

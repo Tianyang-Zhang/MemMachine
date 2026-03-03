@@ -803,6 +803,8 @@ async def test_llm_time_accumulates_top_level_and_sub_skill_sessions(
         ]
     )
     model.session_llm_times = [0.14, 0.31]
+    model.session_llm_input_tokens = [7, 11]
+    model.session_llm_output_tokens = [3, 5]
     retrieve_skill = _build_skill(model)
 
     _episodes, metrics = await retrieve_skill.do_query(
@@ -811,3 +813,9 @@ async def test_llm_time_accumulates_top_level_and_sub_skill_sessions(
     )
 
     assert metrics["llm_time"] == pytest.approx(0.45)
+    assert metrics["llm_call_count"] == 2
+    assert metrics["input_token"] == 18
+    assert metrics["output_token"] == 8
+    assert metrics["top_level_llm_call_count"] == 1
+    assert metrics["top_level_input_token"] == 7
+    assert metrics["top_level_output_token"] == 3
