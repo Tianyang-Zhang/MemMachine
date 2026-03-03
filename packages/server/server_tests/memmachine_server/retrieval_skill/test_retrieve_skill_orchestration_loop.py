@@ -278,6 +278,8 @@ async def test_spawn_sub_skill_memory_search_and_state_tracking(
     assert raw_result["query"] == "branch query"
     assert raw_result["cached"] is False
     assert "episodes_human_readable" not in raw_result
+    assert metrics["memory_search_called"] == 2
+    assert float(metrics["memory_retrieval_time"]) > 0.0
     assert metrics["top_level_session_invocation_count"] == 1
 
 
@@ -659,6 +661,8 @@ async def test_coq_sub_skill_reuses_cached_results_for_near_duplicate_queries(
     assert memmachine_calls[0]["raw_result"]["cached"] is False
     assert memmachine_calls[1]["raw_result"]["cached"] is True
     assert memmachine_calls[1]["raw_result"]["cached_from_query"] == q1
+    assert metrics["memory_search_called"] == 1
+    assert float(metrics["memory_retrieval_time"]) > 0.0
 
 
 @pytest.mark.asyncio

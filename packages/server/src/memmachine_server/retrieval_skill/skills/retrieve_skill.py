@@ -740,6 +740,13 @@ class RetrieveSkill(SkillToolBase):
                 aggregated_metrics["llm_time"] = float(
                     aggregated_metrics.get("llm_time", 0.0)
                 ) + float(sub_result.llm_time)
+                self._update_perf_metrics(
+                    {
+                        "memory_search_called": sub_result.memory_search_called,
+                        "memory_retrieval_time": sub_result.memory_retrieval_time,
+                    },
+                    aggregated_metrics,
+                )
                 session.merge_episodes(sub_result.episodes)
                 decision = self._record_tool_select_metrics(
                     session=session,
@@ -760,6 +767,17 @@ class RetrieveSkill(SkillToolBase):
                         aggregated_metrics["llm_time"] = float(
                             aggregated_metrics.get("llm_time", 0.0)
                         ) + float(sub_result_retry.llm_time)
+                        self._update_perf_metrics(
+                            {
+                                "memory_search_called": (
+                                    sub_result_retry.memory_search_called
+                                ),
+                                "memory_retrieval_time": (
+                                    sub_result_retry.memory_retrieval_time
+                                ),
+                            },
+                            aggregated_metrics,
+                        )
                         session.merge_episodes(sub_result_retry.episodes)
                         decision = self._record_tool_select_metrics(
                             session=session,

@@ -5,8 +5,7 @@ import logging
 import time
 from typing import Any
 
-from memmachine_server.common.api import EpisodeType
-from memmachine_server.common.episode_store import Episode
+from memmachine_server.common.episode_store import Episode, EpisodeType
 from memmachine_server.episodic_memory import EpisodicMemory
 from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,

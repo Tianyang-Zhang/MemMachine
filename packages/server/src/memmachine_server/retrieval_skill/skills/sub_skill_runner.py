@@ -57,6 +57,8 @@ class SubSkillExecutionResult(BaseModel):
     tool_calls: list[SkillToolCallRecord] = Field(default_factory=list)
     fallback_trigger_reason: str | None = None
     llm_time: float = 0.0
+    memory_search_called: int = 0
+    memory_retrieval_time: float = 0.0
     branch_total: int = 0
     branch_success_count: int = 0
     branch_failure_count: int = 0
@@ -72,6 +74,8 @@ class _SplitBranchResult:
     episodes: list[Episode]
     retry_count: int
     llm_time: float = 0.0
+    memory_search_called: int = 0
+    memory_retrieval_time: float = 0.0
     error: str = ""
     nested_tool_calls: list[SkillToolCallRecord] | None = None
 
@@ -144,7 +148,7 @@ class SubSkillRunner:
                 "episode_lines",
             }:
                 continue
-            if isinstance(value, (str, int, float, bool)) or value is None:
+            if isinstance(value, str | int | float | bool) or value is None:
                 sanitized[key] = value
                 continue
             if isinstance(value, dict):
@@ -306,6 +310,26 @@ class SubSkillRunner:
             return "coq"
         return selected_skill
 
+    @staticmethod
+    def _metric_as_int(metrics: dict[str, object], key: str) -> int:
+        value = metrics.get(key, 0)
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return 0
+
+    @staticmethod
+    def _metric_as_float(metrics: dict[str, object], key: str) -> float:
+        value = metrics.get(key, 0.0)
+        if isinstance(value, bool):
+            return 0.0
+        if isinstance(value, int | float):
+            return float(value)
+        return 0.0
+
     def _tool_calls_from_live_result(  # noqa: C901
         self,
         *,
@@ -411,10 +435,13 @@ class SubSkillRunner:
         memmachine_call_details: list[dict[str, object]] = []
         cached_query_results: list[dict[str, object]] = []
         summary_from_tool: str = ""
+        memory_search_called = 0
+        memory_retrieval_time = 0.0
 
         async def _tool_memmachine_search(  # noqa: C901
             arguments: dict[str, object],
         ) -> dict[str, object]:
+            nonlocal memory_search_called, memory_retrieval_time
             next_query = str(arguments.get("query") or query.query)
             normalized_query = self._normalize_query_for_cache(next_query)
             query_tokens = self._query_tokens(next_query)
@@ -448,8 +475,16 @@ class SubSkillRunner:
                     cached_from_query = None
             else:
                 next_param = self._query_with_override(query, next_query)
-                episodes, _metrics = await self._memory_tool.do_query(
+                episodes, memory_metrics = await self._memory_tool.do_query(
                     policy, next_param
+                )
+                memory_search_called += self._metric_as_int(
+                    memory_metrics,
+                    "memory_search_called",
+                )
+                memory_retrieval_time += self._metric_as_float(
+                    memory_metrics,
+                    "memory_retrieval_time",
                 )
                 collected_episodes.extend(episodes)
                 cached_query_results.append(
@@ -527,7 +562,15 @@ class SubSkillRunner:
         result.episodes = collected_episodes
         if not result.episodes and "memmachine_search" in spec.allowed_tools:
             # Preserve existing behavior when no explicit tool calls are emitted.
-            episodes, _metrics = await self._memory_tool.do_query(policy, query)
+            episodes, memory_metrics = await self._memory_tool.do_query(policy, query)
+            memory_search_called += self._metric_as_int(
+                memory_metrics,
+                "memory_search_called",
+            )
+            memory_retrieval_time += self._metric_as_float(
+                memory_metrics,
+                "memory_retrieval_time",
+            )
             result.episodes = episodes
 
         result.tool_calls = self._tool_calls_from_live_result(
@@ -536,6 +579,8 @@ class SubSkillRunner:
             memmachine_call_details=memmachine_call_details,
         )
         result.llm_time = float(live_result.llm_time_seconds)
+        result.memory_search_called = memory_search_called
+        result.memory_retrieval_time = memory_retrieval_time
         result.summary = summary_from_tool or live_result.final_response.strip()
         result.episodes = self._dedupe_episodes(result.episodes)
         result.status = "success"
@@ -640,6 +685,12 @@ class SubSkillRunner:
                                 episodes=[],
                                 retry_count=retry_count,
                                 llm_time=branch_skill_result.llm_time,
+                                memory_search_called=(
+                                    branch_skill_result.memory_search_called
+                                ),
+                                memory_retrieval_time=(
+                                    branch_skill_result.memory_retrieval_time
+                                ),
                                 error=(
                                     f"{execution_skill} branch failed "
                                     f"(status={branch_skill_result.status}, "
@@ -654,10 +705,16 @@ class SubSkillRunner:
                             episodes=branch_skill_result.episodes,
                             retry_count=retry_count,
                             llm_time=branch_skill_result.llm_time,
+                            memory_search_called=(
+                                branch_skill_result.memory_search_called
+                            ),
+                            memory_retrieval_time=(
+                                branch_skill_result.memory_retrieval_time
+                            ),
                             nested_tool_calls=branch_skill_result.tool_calls,
                         )
 
-                    episodes, _metrics = await self._memory_tool.do_query(
+                    episodes, memory_metrics = await self._memory_tool.do_query(
                         policy, next_param
                     )
                     return _SplitBranchResult(
@@ -668,6 +725,14 @@ class SubSkillRunner:
                         episodes=self._dedupe_episodes(episodes),
                         retry_count=retry_count,
                         llm_time=0.0,
+                        memory_search_called=self._metric_as_int(
+                            memory_metrics,
+                            "memory_search_called",
+                        ),
+                        memory_retrieval_time=self._metric_as_float(
+                            memory_metrics,
+                            "memory_retrieval_time",
+                        ),
                     )
                 except Exception as err:
                     if attempt < self._split_branch_retry_limit:
@@ -745,6 +810,8 @@ class SubSkillRunner:
             episodes=list(planner_result.episodes),
             tool_calls=list(planner_result.tool_calls),
             llm_time=planner_result.llm_time,
+            memory_search_called=planner_result.memory_search_called,
+            memory_retrieval_time=planner_result.memory_retrieval_time,
         )
 
         branch_success_count = 0
@@ -757,6 +824,8 @@ class SubSkillRunner:
             branch_retry_count += branch_result.retry_count
             result.llm_time += branch_selection.llm_time
             result.llm_time += branch_result.llm_time
+            result.memory_search_called += branch_result.memory_search_called
+            result.memory_retrieval_time += branch_result.memory_retrieval_time
             if branch_result.status == "success":
                 branch_success_count += 1
                 result.episodes.extend(branch_result.episodes)
