@@ -284,6 +284,58 @@ async def test_spawn_sub_skill_memory_search_and_state_tracking(
 
 
 @pytest.mark.asyncio
+async def test_return_final_captures_top_level_sufficiency_fields(
+    query_policy: QueryPolicy,
+) -> None:
+    episode = _build_episode("ep-suff", "suff evidence")
+    memory = FakeEpisodicMemory({"hello": [episode]})
+    model = ScriptedLanguageModel(
+        [
+            (
+                "policy text",
+                [
+                    {
+                        "function": {
+                            "name": "direct_memory_search",
+                            "arguments": {"query": "hello"},
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {
+                                "final_response": "finalized",
+                                "is_sufficient": True,
+                                "confidence_score": 0.91,
+                                "reason_code": "sufficient_cumulative_evidence",
+                                "reason_note": "supporting evidence found",
+                                "related_episode_indices": [0],
+                                "selected_episode_indices": [0],
+                            },
+                        }
+                    },
+                ],
+            )
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert [item.uid for item in episodes] == ["ep-suff"]
+    assert metrics["top_level_sufficiency_signal_seen"] is True
+    assert metrics["top_level_is_sufficient"] is True
+    assert metrics["top_level_confidence_score"] == pytest.approx(0.91)
+    assert metrics["top_level_reason_code"] == "sufficient_cumulative_evidence"
+    assert metrics["top_level_reason_note"] == "supporting evidence found"
+    assert metrics["top_level_related_episode_indices"] == [0]
+    assert metrics["top_level_selected_episode_indices"] == [0]
+
+
+@pytest.mark.asyncio
 async def test_tool_protocol_invalid_action_triggers_fallback(
     query_policy: QueryPolicy,
 ) -> None:
@@ -572,6 +624,132 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
     selected_queries = [call["arguments"]["query"] for call in split_calls]
     assert branch_a_query in selected_queries
     assert branch_b_query in selected_queries
+
+
+@pytest.mark.asyncio
+async def test_split_verification_pass_can_request_branch_rerun(
+    query_policy: QueryPolicy,
+) -> None:
+    branch_initial = _build_episode("split-rerun-initial", "initial branch evidence")
+    branch_rerun = _build_episode("split-rerun-second", "rerun branch evidence")
+    memory = FakeEpisodicMemory(
+        {
+            "branch one": [branch_initial],
+            "branch rerun": [branch_rerun],
+        }
+    )
+    model = ScriptedLanguageModel(
+        [
+            (
+                "top-level",
+                [
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "split",
+                                "query": "hello",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {"final_response": "done"},
+                        }
+                    },
+                ],
+            ),
+            (
+                "split planner",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": '{"sub_queries":["branch one"]}'
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
+                "branch selector",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"direct_memory",'
+                                    '"selected_route":"direct_memory",'
+                                    '"confidence_score":0.88,'
+                                    '"reason_code":"single_hop_direct"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
+                "split verification",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"is_sufficient":false,'
+                                    '"confidence_score":0.62,'
+                                    '"reason_code":"missing_final_attribute",'
+                                    '"reason_note":"run one targeted rerun",'
+                                    '"rerun_branch_queries":["branch rerun"]}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+            (
+                "rerun selector",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"selected_skill":"direct_memory",'
+                                    '"selected_route":"direct_memory",'
+                                    '"confidence_score":0.9,'
+                                    '"reason_code":"single_hop_direct"}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    _episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert "branch one" in memory.queries
+    assert "branch rerun" in memory.queries
+    assert metrics["branch_total"] == 2
+    assert metrics["branch_success_count"] == 2
+    sub_runs = metrics["orchestrator_sub_skill_runs"]
+    assert isinstance(sub_runs, list)
+    split_run = sub_runs[0]
+    assert split_run["skill_name"] == "split"
+    assert split_run["branch_total"] == 2
+    assert any(
+        call["tool_name"] == "split_verification_rerun_summary"
+        for call in split_run["tool_calls"]
+    )
 
 
 @pytest.mark.asyncio

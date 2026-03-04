@@ -120,6 +120,30 @@ def _build_skill_used_label(perf_metrics: dict[str, Any]) -> str:
 
 
 def _build_retrieval_answer_hint(perf_metrics: dict[str, Any]) -> str:
+    if bool(perf_metrics.get("top_level_sufficiency_signal_seen", False)) and bool(
+        perf_metrics.get("top_level_is_sufficient", False)
+    ):
+        answer_candidate = perf_metrics.get("answer_candidate")
+        if not isinstance(answer_candidate, str) or not answer_candidate.strip():
+            answer_candidate = perf_metrics.get("latest_answer_candidate")
+        reason_note = perf_metrics.get("top_level_reason_note")
+        if isinstance(answer_candidate, str) and answer_candidate.strip():
+            if isinstance(reason_note, str) and reason_note.strip():
+                return (
+                    "[Retrieval-Skill Summary] "
+                    f"Top-level answer candidate: {answer_candidate.strip()}. "
+                    f"Reason: {reason_note.strip()}."
+                )
+            return (
+                "[Retrieval-Skill Summary] "
+                f"Top-level answer candidate: {answer_candidate.strip()}."
+            )
+        if isinstance(reason_note, str) and reason_note.strip():
+            return (
+                "[Retrieval-Skill Summary] "
+                f"Top-level sufficiency reason: {reason_note.strip()}."
+            )
+
     if not bool(perf_metrics.get("latest_sufficiency_signal", False)):
         return ""
     answer_candidate = perf_metrics.get("latest_answer_candidate")

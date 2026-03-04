@@ -50,6 +50,8 @@ Maintain:
 - `all_retrieved_documents`: ordered list of all retrieved docs from every hop
 - `answer_candidate`: shortest explicit answer span currently supported by
   cumulative evidence (empty until sufficient)
+- `related_episode_indices`: episodes related to answering the original query
+- `selected_episode_indices`: episodes selected by your own filtering judgment
 
 Every sufficiency check must use `all_retrieved_documents`, not only the latest
 hop.
@@ -189,6 +191,11 @@ When `is_sufficient=true`:
 - include `answer_candidate` as the canonical short answer string
 - ensure `reason_note` states why the selected candidate is the best-supported
   target value when multiple related facts appear
+- if confidence is high (`>=0.8`), return `selected_episode_indices` with the
+  evidence you trust most
+- if high confidence but no explicit selection is possible, keep fallback
+  behavior by returning no `selected_episode_indices` and note fallback-to-all
+  in `reason_note`
 
 Never issue another `memmachine_search` after sufficiency is reached.
 
@@ -202,6 +209,11 @@ When still insufficient:
   blocking fact (prefer final asked attribute when intermediate identity is
   already resolved)
 - set `answer_candidate` to empty string when insufficient
+- identify `related_episode_indices` for useful intermediate evidence
+- if any related evidence has confidence `>=0.7`, set
+  `selected_episode_indices` to those high-confidence indices
+- if no related evidence reaches `0.7`, use fallback-to-all behavior (leave
+  `selected_episode_indices` empty and reflect fallback in `reason_note`)
 
 ### 10. Confidence calibration
 
@@ -248,6 +260,8 @@ Structured completion (required for all endings):
 - `used_queries`: array of strings
 - `answer_candidate`: short string (required to be non-empty when
   `is_sufficient=true`)
+- `related_episode_indices`: array of integer indices (0-based)
+- `selected_episode_indices`: array of integer indices (0-based)
 
 Fail-closed requirements:
 - never return free-form prose in place of JSON
@@ -255,6 +269,7 @@ Fail-closed requirements:
 - when insufficient and uncertain, keep `is_sufficient=false`
 - when sufficient, `new_query` must equal `original_query` exactly
 - when sufficient, `answer_candidate` must be present and non-empty
+- `selected_episode_indices` must be subset of known retrieved evidence indices
 
 ## Examples
 

@@ -33,6 +33,13 @@ class TopLevelToolAction(BaseModel):
     query: str | None = None
     final_response: str | None = None
     rationale: str = ""
+    # Optional top-level sufficiency signal fields for metrics/evaluation traces.
+    is_sufficient: bool | None = None
+    confidence_score: float | None = None
+    reason_code: str | None = None
+    reason_note: str | None = None
+    related_episode_indices: list[int] | None = None
+    selected_episode_indices: list[int] | None = None
 
 
 class SubSkillToolAction(BaseModel):
@@ -95,6 +102,18 @@ def top_level_tool_schemas(allowed_tools: list[str]) -> list[dict[str, object]]:
                     "properties": {
                         "final_response": {"type": "string"},
                         "rationale": {"type": "string"},
+                        "is_sufficient": {"type": "boolean"},
+                        "confidence_score": {"type": "number"},
+                        "reason_code": {"type": "string"},
+                        "reason_note": {"type": "string"},
+                        "related_episode_indices": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        },
+                        "selected_episode_indices": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        },
                     },
                     "required": [],
                     "additionalProperties": False,

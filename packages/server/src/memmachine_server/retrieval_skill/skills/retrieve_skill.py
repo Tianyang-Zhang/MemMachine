@@ -317,6 +317,26 @@ class RetrieveSkill(SkillToolBase):
             return cast(dict[str, object], parsed)
         return None
 
+    @staticmethod
+    def _normalize_episode_indices(raw: object) -> list[int]:
+        if not isinstance(raw, list):
+            return []
+        normalized: list[int] = []
+        seen: set[int] = set()
+        for item in raw:
+            if isinstance(item, bool):
+                continue
+            value: int | None = None
+            if isinstance(item, int):
+                value = item
+            elif isinstance(item, float) and item.is_integer():
+                value = int(item)
+            if value is None or value < 0 or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized
+
     def _record_sub_skill_summary_metrics(
         self,
         *,
@@ -351,7 +371,7 @@ class RetrieveSkill(SkillToolBase):
             )
         return payload
 
-    def _apply_sub_skill_sufficiency_signal(
+    def _apply_sub_skill_sufficiency_signal(  # noqa: C901
         self,
         *,
         session: TopLevelSkillSessionState,
@@ -371,6 +391,15 @@ class RetrieveSkill(SkillToolBase):
         elif not bool(aggregated_metrics.get("evidence_sufficient", False)):
             aggregated_metrics["evidence_sufficient"] = False
 
+        confidence_score = summary_payload.get("confidence_score")
+        if isinstance(confidence_score, int | float) and not isinstance(
+            confidence_score, bool
+        ):
+            score = float(confidence_score)
+            aggregated_metrics["latest_sufficiency_confidence_score"] = score
+            if is_sufficient:
+                aggregated_metrics["sufficiency_confidence_score"] = score
+
         new_query = summary_payload.get("new_query")
         if isinstance(new_query, str) and new_query.strip():
             aggregated_metrics["latest_missing_query"] = new_query.strip()
@@ -388,13 +417,42 @@ class RetrieveSkill(SkillToolBase):
             if is_sufficient:
                 aggregated_metrics["answer_candidate"] = candidate
 
+        evidence_indices = self._normalize_episode_indices(
+            summary_payload.get("evidence_indices")
+        )
+        if evidence_indices:
+            aggregated_metrics["latest_evidence_indices"] = evidence_indices
+            if is_sufficient:
+                aggregated_metrics["evidence_indices"] = evidence_indices
+
+        related_episode_indices = self._normalize_episode_indices(
+            summary_payload.get("related_episode_indices")
+        )
+        if related_episode_indices:
+            aggregated_metrics["latest_related_episode_indices"] = (
+                related_episode_indices
+            )
+
+        selected_episode_indices = self._normalize_episode_indices(
+            summary_payload.get("selected_episode_indices")
+        )
+        if selected_episode_indices:
+            aggregated_metrics["latest_selected_episode_indices"] = (
+                selected_episode_indices
+            )
+            if is_sufficient:
+                aggregated_metrics["selected_episode_indices"] = (
+                    selected_episode_indices
+                )
+
         session.record_event(
             actor="top-level",
             event_type="sub_skill_sufficiency_signal",
             detail=(
                 f"skill={skill_name}; "
                 f"is_sufficient={is_sufficient}; "
-                f"reason_code={reason_code or 'n/a'}"
+                f"reason_code={reason_code or 'n/a'}; "
+                f"confidence={aggregated_metrics.get('latest_sufficiency_confidence_score', 'n/a')}"
             ),
         )
 
@@ -594,6 +652,8 @@ class RetrieveSkill(SkillToolBase):
         metrics.setdefault("tool_select_llm_call_count", 0)
         metrics.setdefault("tool_select_input_token", 0)
         metrics.setdefault("tool_select_output_token", 0)
+        metrics.setdefault("top_level_sufficiency_signal_seen", False)
+        metrics.setdefault("top_level_is_sufficient", False)
         final_episodes, rerank_applied = await self._finalize_episodes(
             query=query,
             episodes=session.merged_episodes,
@@ -1026,7 +1086,7 @@ class RetrieveSkill(SkillToolBase):
                 )
                 return response_payload
 
-            async def _execute_return_final(
+            async def _execute_return_final(  # noqa: C901
                 arguments: dict[str, object],
             ) -> dict[str, object]:
                 session.next_step()
@@ -1048,20 +1108,106 @@ class RetrieveSkill(SkillToolBase):
                     if action.final_response
                     else "Top-level retrieval complete."
                 )
+                top_level_is_sufficient: bool
+                top_level_signal_source = "explicit"
+                if isinstance(action.is_sufficient, bool):
+                    top_level_is_sufficient = action.is_sufficient
+                else:
+                    inferred_sufficiency = aggregated_metrics.get("evidence_sufficient")
+                    if isinstance(inferred_sufficiency, bool):
+                        top_level_is_sufficient = inferred_sufficiency
+                        top_level_signal_source = "inferred_from_sub_skills"
+                    else:
+                        top_level_is_sufficient = False
+                        top_level_signal_source = "default_false"
+
+                confidence_score = action.confidence_score
+                normalized_confidence: float | None = None
+                if isinstance(confidence_score, int | float) and not isinstance(
+                    confidence_score, bool
+                ):
+                    normalized_confidence = float(confidence_score)
+
+                related_episode_indices = self._normalize_episode_indices(
+                    action.related_episode_indices
+                )
+                selected_episode_indices = self._normalize_episode_indices(
+                    action.selected_episode_indices
+                )
+                if (
+                    top_level_is_sufficient
+                    and normalized_confidence is not None
+                    and normalized_confidence >= 0.8
+                    and not selected_episode_indices
+                ):
+                    # High-confidence + empty selected evidence falls back to all.
+                    aggregated_metrics["top_level_selected_evidence_fallback"] = (
+                        "all_episodes"
+                    )
+                aggregated_metrics["top_level_sufficiency_signal_seen"] = True
+                aggregated_metrics["top_level_is_sufficient"] = top_level_is_sufficient
+                aggregated_metrics["top_level_sufficiency_signal_source"] = (
+                    top_level_signal_source
+                )
+                if normalized_confidence is not None:
+                    aggregated_metrics["top_level_confidence_score"] = (
+                        normalized_confidence
+                    )
+                if isinstance(action.reason_code, str) and action.reason_code.strip():
+                    aggregated_metrics["top_level_reason_code"] = action.reason_code
+                if isinstance(action.reason_note, str) and action.reason_note.strip():
+                    aggregated_metrics["top_level_reason_note"] = action.reason_note
+                if related_episode_indices:
+                    aggregated_metrics["top_level_related_episode_indices"] = (
+                        related_episode_indices
+                    )
+                if selected_episode_indices:
+                    aggregated_metrics["top_level_selected_episode_indices"] = (
+                        selected_episode_indices
+                    )
+
+                return_arguments: dict[str, object] = {
+                    "final_response": final_response,
+                    "rationale": action.rationale,
+                    "is_sufficient": top_level_is_sufficient,
+                }
+                if normalized_confidence is not None:
+                    return_arguments["confidence_score"] = normalized_confidence
+                if isinstance(action.reason_code, str) and action.reason_code.strip():
+                    return_arguments["reason_code"] = action.reason_code
+                if isinstance(action.reason_note, str) and action.reason_note.strip():
+                    return_arguments["reason_note"] = action.reason_note
+                if related_episode_indices:
+                    return_arguments["related_episode_indices"] = (
+                        related_episode_indices
+                    )
+                if selected_episode_indices:
+                    return_arguments["selected_episode_indices"] = (
+                        selected_episode_indices
+                    )
                 session.record_tool_call(
                     tool_name="return_final",
-                    arguments={
-                        "final_response": final_response,
-                        "rationale": action.rationale,
-                    },
+                    arguments=return_arguments,
                     status="success",
                     result_summary="orchestration finalized",
-                    raw_result={"final_response": final_response},
+                    raw_result={
+                        "final_response": final_response,
+                        "is_sufficient": top_level_is_sufficient,
+                        "confidence_score": normalized_confidence,
+                        "reason_code": action.reason_code,
+                        "reason_note": action.reason_note,
+                        "related_episode_indices": related_episode_indices,
+                        "selected_episode_indices": selected_episode_indices,
+                    },
                 )
                 session.record_event(
                     actor="top-level",
                     event_type="orchestration_completed",
-                    detail=f"step={session.current_step}; finalized by top-level policy.",
+                    detail=(
+                        f"step={session.current_step}; finalized by top-level policy; "
+                        f"is_sufficient={top_level_is_sufficient}; "
+                        f"confidence={normalized_confidence if normalized_confidence is not None else 'n/a'}"
+                    ),
                 )
                 session.finalize(response=final_response)
                 return {"final_response": final_response}
@@ -1155,6 +1301,17 @@ class RetrieveSkill(SkillToolBase):
             metrics.setdefault("branch_success_count", 0)
             metrics.setdefault("branch_failure_count", 0)
             metrics.setdefault("branch_retry_count", 0)
+            metrics.setdefault("top_level_sufficiency_signal_seen", False)
+            metrics.setdefault(
+                "top_level_is_sufficient",
+                bool(metrics.get("evidence_sufficient", False)),
+            )
+            if "top_level_confidence_score" not in metrics:
+                latest_conf = metrics.get("latest_sufficiency_confidence_score")
+                if isinstance(latest_conf, int | float) and not isinstance(
+                    latest_conf, bool
+                ):
+                    metrics["top_level_confidence_score"] = float(latest_conf)
             selected_skill = metrics.get("selected_skill")
             if not isinstance(selected_skill, str) or not selected_skill.strip():
                 if session.sub_skill_runs:

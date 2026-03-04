@@ -285,6 +285,52 @@ class SubSkillRunner:
             return [query]
         return normalized[: self._split_parallel_cap]
 
+    @staticmethod
+    def _summary_payload(summary: str) -> dict[str, object] | None:
+        stripped = summary.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        wrapped_v1 = parsed.get("v1")
+        if isinstance(wrapped_v1, dict):
+            return wrapped_v1
+        return parsed
+
+    def _extract_rerun_queries_from_split_summary(
+        self,
+        *,
+        summary: str,
+    ) -> list[str]:
+        payload = self._summary_payload(summary)
+        if payload is None:
+            return []
+
+        raw = payload.get("rerun_branch_queries")
+        if not isinstance(raw, list):
+            return []
+
+        rerun_queries: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            cleaned = item.strip()
+            if not cleaned:
+                continue
+            key = self._normalize_query_for_cache(cleaned)
+            if key in seen:
+                continue
+            seen.add(key)
+            rerun_queries.append(cleaned)
+            if len(rerun_queries) >= self._split_parallel_cap:
+                break
+        return rerun_queries
+
     def _branch_requires_coq(self, branch_query: str) -> bool:
         lowered = branch_query.lower()
         dependency_markers = (
@@ -432,6 +478,7 @@ class SubSkillRunner:
         spec: SkillSpecV1,
         policy: QueryPolicy,
         query: QueryParam,
+        user_prompt: str | None = None,
     ) -> SubSkillExecutionResult:
         prompt = spec.policy_markdown or spec.description
         bounded_max_steps = max(1, spec.max_steps)
@@ -538,7 +585,7 @@ class SubSkillRunner:
         try:
             live_result = await self._session_model.run_live_session(
                 system_prompt=prompt,
-                user_prompt=f"sub-skill query: {query.query}",
+                user_prompt=user_prompt or f"sub-skill query: {query.query}",
                 tools=sub_skill_tool_schemas(spec.allowed_tools),
                 tool_registry={
                     "memmachine_search": _tool_memmachine_search,
@@ -799,7 +846,7 @@ class SubSkillRunner:
             error="split branch execution exited unexpectedly",
         )
 
-    async def _run_split_skill(
+    async def _run_split_skill(  # noqa: C901
         self,
         *,
         skill_name: str,
@@ -967,8 +1014,205 @@ class SubSkillRunner:
                     )
                 )
 
+        if branch_failure_count == 0:
+            verification_branch_context: list[dict[str, object]] = []
+            for branch_index, (branch_selection, branch_result) in enumerate(
+                zip(branch_selections, branch_results, strict=True),
+                start=1,
+            ):
+                branch_lines = [
+                    line
+                    for line in episodes_to_string(branch_result.episodes).splitlines()
+                    if line.strip()
+                ][:50]
+                verification_branch_context.append(
+                    {
+                        "branch_index": branch_index,
+                        "query": branch_selection.query,
+                        "selected_skill": branch_selection.selected_skill,
+                        "execution_skill": branch_result.route,
+                        "status": branch_result.status,
+                        "episodes_human_readable": branch_lines,
+                    }
+                )
+
+            verification_user_prompt = (
+                "split verification context: "
+                + json.dumps(
+                    {
+                        "mode": "verification",
+                        "original_query": query.query,
+                        "planner_summary": planner_result.summary,
+                        "branches": verification_branch_context,
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            verification_result = await self._run_standard_skill(
+                skill_name=skill_name,
+                spec=spec,
+                policy=policy,
+                query=query,
+                user_prompt=verification_user_prompt,
+            )
+            result.llm_time += verification_result.llm_time
+            result.llm_call_count += verification_result.llm_call_count
+            result.llm_input_tokens += verification_result.llm_input_tokens
+            result.llm_output_tokens += verification_result.llm_output_tokens
+            result.memory_search_called += verification_result.memory_search_called
+            result.memory_retrieval_time += verification_result.memory_retrieval_time
+            result.tool_calls.append(
+                SkillToolCallRecord(
+                    step=len(result.tool_calls) + 1,
+                    tool_name="split_verification",
+                    arguments={"query": query.query},
+                    status=verification_result.status,
+                    result_summary="verification pass completed",
+                    raw_result={
+                        "summary": verification_result.summary[:500],
+                        "tool_call_count": len(verification_result.tool_calls),
+                    },
+                )
+            )
+            for verification_tool_call in verification_result.tool_calls:
+                result.tool_calls.append(
+                    SkillToolCallRecord(
+                        step=len(result.tool_calls) + 1,
+                        tool_name=f"split_verification.{verification_tool_call.tool_name}",
+                        arguments=verification_tool_call.arguments,
+                        status=verification_tool_call.status,
+                        result_summary=verification_tool_call.result_summary,
+                        raw_result=verification_tool_call.raw_result,
+                    )
+                )
+            if verification_result.summary.strip():
+                result.summary = verification_result.summary
+
+            rerun_queries = self._extract_rerun_queries_from_split_summary(
+                summary=verification_result.summary
+            )
+            if rerun_queries:
+                rerun_selector_semaphore = asyncio.Semaphore(self._split_parallel_cap)
+                rerun_selector_tasks = [
+                    self._select_split_branch(
+                        branch_query=branch_query,
+                        policy=policy,
+                        query=query,
+                        semaphore=rerun_selector_semaphore,
+                    )
+                    for branch_query in rerun_queries
+                ]
+                rerun_branch_selections = await asyncio.gather(*rerun_selector_tasks)
+
+                rerun_execution_semaphore = asyncio.Semaphore(self._split_parallel_cap)
+                rerun_branch_tasks = [
+                    self._execute_split_branch(
+                        branch_selection=branch_selection,
+                        policy=policy,
+                        query=query,
+                        semaphore=rerun_execution_semaphore,
+                    )
+                    for branch_selection in rerun_branch_selections
+                ]
+                rerun_branch_results = await asyncio.gather(*rerun_branch_tasks)
+
+                for rerun_index, (branch_selection, branch_result) in enumerate(
+                    zip(rerun_branch_selections, rerun_branch_results, strict=True),
+                    start=1,
+                ):
+                    branch_retry_count += branch_result.retry_count
+                    result.llm_time += branch_selection.llm_time
+                    result.llm_time += branch_result.llm_time
+                    result.llm_call_count += branch_selection.llm_call_count
+                    result.llm_call_count += branch_result.llm_call_count
+                    result.llm_input_tokens += branch_selection.llm_input_tokens
+                    result.llm_input_tokens += branch_result.llm_input_tokens
+                    result.llm_output_tokens += branch_selection.llm_output_tokens
+                    result.llm_output_tokens += branch_result.llm_output_tokens
+                    result.memory_search_called += branch_result.memory_search_called
+                    result.memory_retrieval_time += branch_result.memory_retrieval_time
+
+                    if branch_result.status == "success":
+                        branch_success_count += 1
+                        result.episodes.extend(branch_result.episodes)
+                    else:
+                        branch_failure_count += 1
+
+                    result.tool_calls.append(
+                        SkillToolCallRecord(
+                            step=len(result.tool_calls) + 1,
+                            tool_name="split_verification_branch_selection",
+                            arguments={
+                                "rerun_index": rerun_index,
+                                "query": branch_selection.query,
+                            },
+                            status=(
+                                "success"
+                                if branch_selection.status == "success"
+                                else "fallback"
+                            ),
+                            result_summary=(
+                                f"selected_skill={branch_selection.selected_skill}; "
+                                f"execution_skill={branch_selection.execution_skill}"
+                            ),
+                            raw_result={
+                                "selected_skill": branch_selection.selected_skill,
+                                "execution_skill": branch_selection.execution_skill,
+                                "selector_status": branch_selection.status,
+                                "selector_parse_error": branch_selection.parse_error,
+                                "selector_summary": branch_selection.selector_summary[
+                                    :400
+                                ],
+                            },
+                        )
+                    )
+                    result.tool_calls.append(
+                        SkillToolCallRecord(
+                            step=len(result.tool_calls) + 1,
+                            tool_name="split_verification_branch_execution",
+                            arguments={
+                                "rerun_index": rerun_index,
+                                "query": branch_result.query,
+                                "selected_skill": branch_result.selected_skill,
+                                "execution_skill": branch_result.route,
+                            },
+                            status=branch_result.status,
+                            result_summary=(
+                                f"episodes={len(branch_result.episodes)}"
+                                if branch_result.status == "success"
+                                else f"error={branch_result.error[:160]}"
+                            ),
+                            raw_result=(
+                                {
+                                    "episodes_returned": len(branch_result.episodes),
+                                    "selected_skill": branch_result.selected_skill,
+                                    "execution_skill": branch_result.route,
+                                }
+                                if branch_result.status == "success"
+                                else {
+                                    "error": branch_result.error[:160],
+                                    "selected_skill": branch_result.selected_skill,
+                                    "execution_skill": branch_result.route,
+                                }
+                            ),
+                        )
+                    )
+                result.tool_calls.append(
+                    SkillToolCallRecord(
+                        step=len(result.tool_calls) + 1,
+                        tool_name="split_verification_rerun_summary",
+                        arguments={"rerun_query_count": len(rerun_queries)},
+                        status="success",
+                        result_summary=(
+                            f"rerun_queries={len(rerun_queries)}; "
+                            f"rerun_successes={sum(1 for item in rerun_branch_results if item.status == 'success')}"
+                        ),
+                        raw_result={"rerun_queries": rerun_queries},
+                    )
+                )
+
         result.episodes = self._dedupe_episodes(result.episodes)
-        result.branch_total = len(branch_results)
+        result.branch_total = branch_success_count + branch_failure_count
         result.branch_success_count = branch_success_count
         result.branch_failure_count = branch_failure_count
         result.branch_retry_count = branch_retry_count
@@ -978,15 +1222,36 @@ class SubSkillRunner:
         else:
             result.status = "success"
 
-        if not result.summary.strip():
-            result.summary = json.dumps(
-                {
-                    "branch_total": result.branch_total,
-                    "branch_success_count": result.branch_success_count,
-                    "branch_failure_count": result.branch_failure_count,
-                    "branch_retry_count": result.branch_retry_count,
-                }
+        summary_payload = self._summary_payload(result.summary)
+        if summary_payload is None:
+            summary_payload = {}
+        if not isinstance(summary_payload.get("is_sufficient"), bool):
+            summary_payload["is_sufficient"] = branch_failure_count == 0
+        confidence_value = summary_payload.get("confidence_score")
+        if not (
+            isinstance(confidence_value, int | float)
+            and not isinstance(confidence_value, bool)
+        ):
+            summary_payload["confidence_score"] = (
+                0.85 if summary_payload["is_sufficient"] else 0.45
             )
+        if not isinstance(summary_payload.get("reason_code"), str):
+            summary_payload["reason_code"] = (
+                "split_verification_sufficient"
+                if summary_payload["is_sufficient"]
+                else "split_verification_insufficient"
+            )
+        if not isinstance(summary_payload.get("reason_note"), str):
+            summary_payload["reason_note"] = (
+                "split verification pass indicates sufficient evidence."
+                if summary_payload["is_sufficient"]
+                else "split verification pass indicates missing evidence."
+            )
+        summary_payload["branch_total"] = result.branch_total
+        summary_payload["branch_success_count"] = result.branch_success_count
+        summary_payload["branch_failure_count"] = result.branch_failure_count
+        summary_payload["branch_retry_count"] = result.branch_retry_count
+        result.summary = json.dumps(summary_payload)
         return result
 
     async def run(
