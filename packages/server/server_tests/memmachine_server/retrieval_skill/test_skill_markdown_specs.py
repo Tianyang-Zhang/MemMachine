@@ -10,15 +10,15 @@ from memmachine_server.retrieval_skill.skills.types import (
     SkillContractErrorCode,
 )
 
-SUB_SKILL_SPEC_DIR = (
+SPEC_ROOT = (
     Path(__file__).resolve().parents[3]
     / "src"
-    / "memmachine"
-    /("retrieval_skill")
+    / "memmachine_server"
+    / "retrieval_skill"
     / "skills"
     / "specs"
-    / "sub_skills"
 )
+SUB_SKILL_SPEC_DIR = SPEC_ROOT / "sub_skills"
 
 
 def _read_sub_skill_spec_text(file_name: str) -> str:
@@ -26,17 +26,7 @@ def _read_sub_skill_spec_text(file_name: str) -> str:
 
 
 def test_load_markdown_top_level_spec_file() -> None:
-    spec_path = (
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "memmachine"
-        /("retrieval_skill")
-        / "skills"
-        / "specs"
-        / "top_level"
-        / "retrieve_skill.md"
-    )
-
+    spec_path = SPEC_ROOT / "top_level" / "retrieve_skill.md"
     spec = load_skill_spec(spec_path)
 
     assert spec.name == "retrieve-skill"
@@ -44,27 +34,11 @@ def test_load_markdown_top_level_spec_file() -> None:
     assert "spawn_sub_skill" in spec.allowed_actions
     assert spec.policy_markdown is not None
     assert "## Actions" in spec.policy_markdown
-    assert "tool_select" in spec.policy_markdown
-
-
-def test_load_markdown_tool_select_sub_skill_spec_file() -> None:
-    spec_path = SUB_SKILL_SPEC_DIR / "tool_select.md"
-
-    spec = load_skill_spec(spec_path)
-
-    assert spec.name == "tool-select"
-    assert spec.kind == "sub-skill"
-    assert "return_sub_skill_result" in spec.allowed_tools
-    assert spec.policy_markdown is not None
-    assert "## Output Contract" in spec.policy_markdown
-    assert "## Examples" in spec.policy_markdown
-    assert "## Failure Modes" in spec.policy_markdown
-    assert "selected_skill" in spec.policy_markdown
+    assert "direct_memory" in spec.policy_markdown
 
 
 def test_load_markdown_coq_sub_skill_spec_file() -> None:
     spec_path = SUB_SKILL_SPEC_DIR / "coq.md"
-
     spec = load_skill_spec(spec_path)
 
     assert spec.name == "coq"
@@ -79,7 +53,6 @@ def test_load_markdown_coq_sub_skill_spec_file() -> None:
 
 def test_load_markdown_split_sub_skill_spec_file() -> None:
     spec_path = SUB_SKILL_SPEC_DIR / "split.md"
-
     spec = load_skill_spec(spec_path)
 
     assert spec.name == "split"
@@ -92,7 +65,7 @@ def test_load_markdown_split_sub_skill_spec_file() -> None:
 
 
 def test_sub_skill_markdown_specs_do_not_use_placeholder_language() -> None:
-    for file_name in ("tool_select.md", "coq.md", "split.md"):
+    for file_name in ("coq.md", "split.md"):
         raw_text = _read_sub_skill_spec_text(file_name)
         lower_text = raw_text.lower()
         assert "translated from legacy" not in lower_text

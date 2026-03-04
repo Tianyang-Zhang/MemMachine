@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from memmachine_server.common.episode_store import Episode
 
@@ -104,55 +104,8 @@ class SkillResultV1(BaseModel):
     fallback_trigger_reason: str | None = None
 
 
-class RouteDecisionV1(BaseModel):
-    """Strict v1 route-decision contract for top-level select-skill behavior."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    selected_route: Literal["direct_memory", "decompose"] | None = None
-    selected_skill: Literal["direct_memory", "coq", "split"] | None = None
-    confidence_score: float = Field(ge=0.0, le=1.0)
-    reason_code: str = Field(min_length=1)
-    reason_note: str = ""
-    fallback_trigger_reason: str | None = None
-
-    @model_validator(mode="after")
-    def _normalize_route_and_skill(self) -> RouteDecisionV1:
-        route = self.selected_route
-        skill = self.selected_skill
-
-        if route is None and skill is None:
-            raise ValueError(
-                "Route decision must provide selected_route or selected_skill."
-            )
-
-        if route is None:
-            assert skill is not None
-            route = "direct_memory" if skill == "direct_memory" else "decompose"
-            self.selected_route = route
-
-        if skill is None:
-            assert route is not None
-            skill = "direct_memory" if route == "direct_memory" else "coq"
-            self.selected_skill = skill
-
-        assert route is not None
-        assert skill is not None
-        if route == "direct_memory" and skill != "direct_memory":
-            raise ValueError(
-                "selected_route=direct_memory requires selected_skill=direct_memory."
-            )
-        if route == "decompose" and skill not in {"coq", "split"}:
-            raise ValueError(
-                "selected_route=decompose requires selected_skill in {coq, split}."
-            )
-
-        return self
-
-
 __all__ = [
     "SKILL_CONTRACT_VERSION_V1",
-    "RouteDecisionV1",
     "SkillContractError",
     "SkillContractErrorCode",
     "SkillContractErrorPayload",

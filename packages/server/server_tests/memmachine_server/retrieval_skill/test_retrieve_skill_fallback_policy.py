@@ -175,19 +175,6 @@ def _spawn_direct_memory_call(query: str = "hello") -> dict[str, Any]:
     }
 
 
-def _spawn_tool_select_call(query: str = "hello") -> dict[str, Any]:
-    return {
-        "function": {
-            "name": "spawn_sub_skill",
-            "arguments": {
-                "skill_name": "tool_select",
-                "query": query,
-                "rationale": "classify",
-            },
-        }
-    }
-
-
 def _spawn_split_call(query: str = "hello") -> dict[str, Any]:
     return {
         "function": {
@@ -208,58 +195,6 @@ def _return_final_call() -> dict[str, Any]:
             "arguments": {"final_response": "done"},
         }
     }
-
-
-@pytest.mark.asyncio
-async def test_tool_select_low_confidence_triggers_runtime_fallback(
-    query_policy: QueryPolicy,
-) -> None:
-    episode = _build_episode("low-conf", "fallback-evidence")
-    memory = FakeEpisodicMemory({"hello": [episode]})
-    model = PolicyLanguageModel(
-        outputs=[
-            (
-                "top-level",
-                [
-                    _spawn_tool_select_call("hello"),
-                    {
-                        "function": {
-                            "name": "direct_memory_search",
-                            "arguments": {"query": "hello"},
-                        }
-                    },
-                    _return_final_call(),
-                ],
-            ),
-            (
-                "selector",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_route":"decompose",'
-                                    '"confidence_score":0.19,'
-                                    '"reason_code":"low_conf"}'
-                                )
-                            },
-                        }
-                    }
-                ],
-            ),
-        ]
-    )
-
-    skill = _build_skill(model)
-    episodes, metrics = await skill.do_query(
-        query_policy,
-        QueryParam(query="hello", limit=5, memory=memory),
-    )
-
-    assert [item.uid for item in episodes] == ["low-conf"]
-    assert metrics["fallback_trigger_reason"] == "low_confidence_route"
-    assert metrics["top_level_session_invocation_count"] == 1
 
 
 @pytest.mark.asyncio

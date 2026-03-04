@@ -63,8 +63,6 @@ def _normalize_sub_skill_name(raw_name: str) -> str | None:
         "splitskill": "SplitSkill",
         "direct_memory": "DirectMemorySkill",
         "memmachineskill": "DirectMemorySkill",
-        "tool_select": "ToolSelectSkill",
-        "select_skill": "ToolSelectSkill",
     }
     mapped = mapping.get(key)
     if mapped is not None:
@@ -82,7 +80,7 @@ def _extract_sub_skills(perf_metrics: dict[str, Any]) -> list[str]:
         if not isinstance(raw_name, str):
             return
         skill_name = _normalize_sub_skill_name(raw_name)
-        if not skill_name or skill_name == "ToolSelectSkill":
+        if not skill_name:
             return
         if skill_name not in seen:
             used_sub_skills.append(skill_name)

@@ -29,9 +29,6 @@ from memmachine_server.retrieval_skill.skills.fallback_policy import (
     FallbackTrigger,
     decide_fallback_action,
 )
-from memmachine_server.retrieval_skill.skills.route_policy import (
-    parse_route_decision_output_detailed,
-)
 from memmachine_server.retrieval_skill.skills.runtime import (
     build_skill_request,
     fallback_for_downstream_error,
@@ -50,7 +47,6 @@ from memmachine_server.retrieval_skill.skills.tool_protocol import (
     top_level_tool_schemas,
 )
 from memmachine_server.retrieval_skill.skills.types import (
-    RouteDecisionV1,
     SkillContractError,
     SkillContractErrorCode,
     SkillContractErrorPayload,
@@ -84,9 +80,6 @@ class RetrieveSkill(SkillToolBase):
         self._sub_skill_timeout_seconds = int(
             self._extra_params.get("sub_skill_timeout_seconds", 120)
         )
-        self._selector_low_confidence_threshold = float(
-            self._extra_params.get("selector_low_confidence_threshold", 0.35)
-        )
         self._split_parallel_cap = int(self._extra_params.get("split_parallel_cap", 5))
         self._split_branch_retry_limit = int(
             self._extra_params.get("split_branch_retry_limit", 1)
@@ -97,7 +90,7 @@ class RetrieveSkill(SkillToolBase):
         self._available_sub_skills = list(
             self._extra_params.get(
                 "available_sub_skills",
-                ["tool_select", "direct_memory", "coq", "split"],
+                ["direct_memory", "coq", "split"],
             )
         )
         fallback_name = self._extra_params.get("fallback_tool_name", "MemMachineSkill")
@@ -249,33 +242,6 @@ class RetrieveSkill(SkillToolBase):
         next_query = query.model_copy()
         next_query.query = text
         return next_query
-
-    @staticmethod
-    def _selector_malformed_results(
-        aggregated_metrics: dict[str, Any],
-    ) -> list[dict[str, object]]:
-        raw = aggregated_metrics.get("selector_malformed_results")
-        if isinstance(raw, list):
-            return [item for item in raw if isinstance(item, dict)]
-        return []
-
-    def _append_selector_malformed_result(
-        self,
-        *,
-        aggregated_metrics: dict[str, Any],
-        skill_name: str,
-        summary: str,
-        parse_error: str | None,
-    ) -> None:
-        current = self._selector_malformed_results(aggregated_metrics)
-        current.append(
-            {
-                "skill_name": skill_name,
-                "summary": summary.strip()[:1000],
-                "parse_error": parse_error or "unknown_parse_error",
-            }
-        )
-        aggregated_metrics["selector_malformed_results"] = current
 
     @staticmethod
     def _sanitize_tool_raw_result(raw: object) -> dict[str, object] | None:
@@ -456,83 +422,6 @@ class RetrieveSkill(SkillToolBase):
             ),
         )
 
-    def _record_tool_select_metrics(
-        self,
-        *,
-        session: TopLevelSkillSessionState,
-        aggregated_metrics: dict[str, Any],
-        skill_name: str,
-        summary: str,
-    ) -> RouteDecisionV1 | None:
-        normalized = skill_name.replace("-", "_").lower()
-        if normalized not in {"tool_select", "select_skill"}:
-            return None
-        if not summary.strip():
-            return None
-
-        decision, parse_error = parse_route_decision_output_detailed(summary)
-        if decision is None:
-            self._append_selector_malformed_result(
-                aggregated_metrics=aggregated_metrics,
-                skill_name=skill_name,
-                summary=summary,
-                parse_error=parse_error,
-            )
-            session.record_event(
-                actor="top-level",
-                event_type="tool_select_invalid_summary",
-                detail=(
-                    f"parse_error={parse_error or 'unknown_parse_error'}; "
-                    f"summary={summary.strip()[:160]}"
-                ),
-            )
-            return None
-
-        decision_payload = decision.model_dump(mode="json")
-        selector_decisions = aggregated_metrics.get("selector_decisions")
-        if not isinstance(selector_decisions, list):
-            selector_decisions = []
-            aggregated_metrics["selector_decisions"] = selector_decisions
-        selector_decisions.append(decision_payload)
-
-        has_primary_selection = (
-            isinstance(aggregated_metrics.get("selected_route"), str)
-            and bool(str(aggregated_metrics.get("selected_route")).strip())
-            and isinstance(aggregated_metrics.get("selected_skill"), str)
-            and bool(str(aggregated_metrics.get("selected_skill")).strip())
-        )
-        if not has_primary_selection:
-            aggregated_metrics["selected_route"] = decision.selected_route
-            aggregated_metrics["selected_skill"] = decision.selected_skill
-            aggregated_metrics["confidence_score"] = decision.confidence_score
-            aggregated_metrics["reason_code"] = decision.reason_code
-            aggregated_metrics["reason_note"] = decision.reason_note
-            if decision.fallback_trigger_reason:
-                aggregated_metrics["selector_fallback_trigger_reason"] = (
-                    decision.fallback_trigger_reason
-                )
-        else:
-            aggregated_metrics["latest_selected_route"] = decision.selected_route
-            aggregated_metrics["latest_selected_skill"] = decision.selected_skill
-            aggregated_metrics["latest_confidence_score"] = decision.confidence_score
-            aggregated_metrics["latest_reason_code"] = decision.reason_code
-            aggregated_metrics["latest_reason_note"] = decision.reason_note
-            if decision.fallback_trigger_reason:
-                aggregated_metrics["latest_selector_fallback_trigger_reason"] = (
-                    decision.fallback_trigger_reason
-                )
-        session.record_event(
-            actor="top-level",
-            event_type="tool_select_decision_recorded",
-            detail=(
-                f"route={decision.selected_route}; "
-                f"skill={decision.selected_skill}; "
-                f"confidence={decision.confidence_score:.3f}; "
-                f"reason_code={decision.reason_code}"
-            ),
-        )
-        return decision
-
     def _record_branch_metrics(
         self,
         *,
@@ -590,11 +479,6 @@ class RetrieveSkill(SkillToolBase):
         code: str,
         aggregated_metrics: dict[str, Any] | None = None,
     ) -> tuple[list[Episode], dict[str, object]]:
-        selector_malformed_results: list[dict[str, object]] = []
-        if aggregated_metrics is not None:
-            selector_malformed_results = self._selector_malformed_results(
-                aggregated_metrics
-            )
         session.next_step()
         fallback_episodes, fallback_metrics = await self._memory_tool.do_query(
             policy, query
@@ -603,20 +487,11 @@ class RetrieveSkill(SkillToolBase):
             "query": query.query,
             "rationale": f"runtime_fallback:{reason}",
         }
-        if selector_malformed_results:
-            fallback_arguments["selector_malformed_results"] = (
-                selector_malformed_results
-            )
-        fallback_summary = f"episodes={len(fallback_episodes)}"
-        if selector_malformed_results:
-            fallback_summary += (
-                f"; selector_malformed_attempts={len(selector_malformed_results)}"
-            )
         session.record_tool_call(
             tool_name="direct_memory_search",
             arguments=fallback_arguments,
             status="success",
-            result_summary=fallback_summary,
+            result_summary=f"episodes={len(fallback_episodes)}",
             raw_result={
                 "query": query.query,
                 "episodes_returned": len(fallback_episodes),
@@ -649,9 +524,6 @@ class RetrieveSkill(SkillToolBase):
         metrics.setdefault("llm_call_count", 0)
         metrics.setdefault("input_token", 0)
         metrics.setdefault("output_token", 0)
-        metrics.setdefault("tool_select_llm_call_count", 0)
-        metrics.setdefault("tool_select_input_token", 0)
-        metrics.setdefault("tool_select_output_token", 0)
         metrics.setdefault("top_level_sufficiency_signal_seen", False)
         metrics.setdefault("top_level_is_sufficient", False)
         final_episodes, rerank_applied = await self._finalize_episodes(
@@ -809,91 +681,7 @@ class RetrieveSkill(SkillToolBase):
                     },
                     aggregated_metrics,
                 )
-                normalized_skill = sub_result.skill_name.replace("-", "_").lower()
-                if normalized_skill in {"tool_select", "select_skill"}:
-                    self._update_perf_metrics(
-                        {
-                            "tool_select_llm_call_count": sub_result.llm_call_count,
-                            "tool_select_input_token": sub_result.llm_input_tokens,
-                            "tool_select_output_token": sub_result.llm_output_tokens,
-                        },
-                        aggregated_metrics,
-                    )
                 session.merge_episodes(sub_result.episodes)
-                decision = self._record_tool_select_metrics(
-                    session=session,
-                    aggregated_metrics=aggregated_metrics,
-                    skill_name=sub_result.skill_name,
-                    summary=sub_result.summary,
-                )
-
-                if normalized_skill in {"tool_select", "select_skill"}:
-                    if decision is None:
-                        session.record_event(
-                            actor="top-level",
-                            event_type="tool_select_retry",
-                            detail="Retrying tool_select after malformed summary.",
-                        )
-                        sub_result_retry = await _run_sub_skill_once()
-                        aggregated_metrics["llm_time"] = float(
-                            aggregated_metrics.get("llm_time", 0.0)
-                        ) + float(sub_result_retry.llm_time)
-                        self._update_perf_metrics(
-                            {
-                                "llm_call_count": sub_result_retry.llm_call_count,
-                                "input_token": sub_result_retry.llm_input_tokens,
-                                "output_token": sub_result_retry.llm_output_tokens,
-                                "memory_search_called": (
-                                    sub_result_retry.memory_search_called
-                                ),
-                                "memory_retrieval_time": (
-                                    sub_result_retry.memory_retrieval_time
-                                ),
-                            },
-                            aggregated_metrics,
-                        )
-                        self._update_perf_metrics(
-                            {
-                                "tool_select_llm_call_count": (
-                                    sub_result_retry.llm_call_count
-                                ),
-                                "tool_select_input_token": (
-                                    sub_result_retry.llm_input_tokens
-                                ),
-                                "tool_select_output_token": (
-                                    sub_result_retry.llm_output_tokens
-                                ),
-                            },
-                            aggregated_metrics,
-                        )
-                        session.merge_episodes(sub_result_retry.episodes)
-                        decision = self._record_tool_select_metrics(
-                            session=session,
-                            aggregated_metrics=aggregated_metrics,
-                            skill_name=sub_result_retry.skill_name,
-                            summary=sub_result_retry.summary,
-                        )
-                        sub_result = sub_result_retry
-                        if decision is None:
-                            self._raise_contract_error(
-                                why=(
-                                    "tool_select summary remained malformed after retry."
-                                ),
-                                fallback_reason="selector_unclassifiable",
-                            )
-                    assert decision is not None
-                    if (
-                        decision.confidence_score
-                        < self._selector_low_confidence_threshold
-                    ):
-                        self._raise_contract_error(
-                            why=(
-                                "tool_select confidence below threshold: "
-                                f"{decision.confidence_score:.3f} < "
-                                f"{self._selector_low_confidence_threshold:.3f}"
-                            ),
-                            fallback_reason=FallbackTrigger.LOW_CONFIDENCE.value,
-                        )
 
                 if sub_result.branch_total > 0:
                     self._record_branch_metrics(
@@ -953,13 +741,6 @@ class RetrieveSkill(SkillToolBase):
                     spawn_arguments["summary"] = sub_result.summary
                 if summary_payload is not None:
                     spawn_arguments["summary_payload"] = summary_payload
-                if (
-                    normalized_skill in {"tool_select", "select_skill"}
-                    and decision is not None
-                ):
-                    spawn_arguments["selector_decision"] = decision.model_dump(
-                        mode="json"
-                    )
                 response_payload: dict[str, object] = {
                     "skill_name": sub_result.skill_name,
                     "episodes_returned": len(sub_result.episodes),
@@ -972,18 +753,6 @@ class RetrieveSkill(SkillToolBase):
                     response_payload["summary"] = sub_result.summary
                 if summary_payload is not None:
                     response_payload["summary_payload"] = summary_payload
-                if normalized_skill in {"tool_select", "select_skill"}:
-                    if decision is not None:
-                        response_payload["selector_decision"] = decision.model_dump(
-                            mode="json"
-                        )
-                    malformed_results = self._selector_malformed_results(
-                        aggregated_metrics
-                    )
-                    if malformed_results:
-                        response_payload["selector_malformed_results"] = (
-                            malformed_results
-                        )
                 session.record_tool_call(
                     tool_name="spawn_sub_skill",
                     arguments=spawn_arguments,
@@ -1042,19 +811,6 @@ class RetrieveSkill(SkillToolBase):
                     "query": direct_query,
                     "rationale": action.rationale,
                 }
-                selector_malformed_results = self._selector_malformed_results(
-                    aggregated_metrics
-                )
-                if selector_malformed_results:
-                    direct_arguments["selector_malformed_results"] = (
-                        selector_malformed_results
-                    )
-                direct_result_summary = f"episodes={len(episodes)}"
-                if selector_malformed_results:
-                    direct_result_summary += (
-                        f"; selector_malformed_attempts="
-                        f"{len(selector_malformed_results)}"
-                    )
                 episode_lines = [
                     line
                     for line in episodes_to_string(episodes).splitlines()
@@ -1069,7 +825,7 @@ class RetrieveSkill(SkillToolBase):
                     tool_name="direct_memory_search",
                     arguments=direct_arguments,
                     status="success",
-                    result_summary=direct_result_summary,
+                    result_summary=f"episodes={len(episodes)}",
                     raw_result=self._sanitize_tool_raw_result(response_payload),
                 )
                 session.record_event(
@@ -1286,9 +1042,6 @@ class RetrieveSkill(SkillToolBase):
             metrics.setdefault("llm_call_count", 0)
             metrics.setdefault("input_token", 0)
             metrics.setdefault("output_token", 0)
-            metrics.setdefault("tool_select_llm_call_count", 0)
-            metrics.setdefault("tool_select_input_token", 0)
-            metrics.setdefault("tool_select_output_token", 0)
             metrics.setdefault("branch_total", 0)
             metrics.setdefault("branch_success_count", 0)
             metrics.setdefault("branch_failure_count", 0)

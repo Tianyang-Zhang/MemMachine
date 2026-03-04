@@ -149,10 +149,10 @@ def _build_episode(uid: str) -> Episode:
 
 
 @pytest.mark.asyncio
-async def test_tool_select_sub_skill_summary_sets_route_metrics(
+async def test_coq_sub_skill_summary_sets_sufficiency_metrics(
     query_policy: QueryPolicy,
 ) -> None:
-    episode = _build_episode("route-1")
+    episode = _build_episode("route-coq")
     memory = FakeEpisodicMemory({"hello": [episode]})
     model = ScriptedLanguageModel(
         outputs=[
@@ -163,16 +163,10 @@ async def test_tool_select_sub_skill_summary_sets_route_metrics(
                         "function": {
                             "name": "spawn_sub_skill",
                             "arguments": {
-                                "skill_name": "tool_select",
+                                "skill_name": "coq",
                                 "query": "hello",
-                                "rationale": "classify route",
+                                "rationale": "dependent multi-hop",
                             },
-                        }
-                    },
-                    {
-                        "function": {
-                            "name": "direct_memory_search",
-                            "arguments": {"query": "hello"},
                         }
                     },
                     {
@@ -184,16 +178,17 @@ async def test_tool_select_sub_skill_summary_sets_route_metrics(
                 ],
             ),
             (
-                "selector",
+                "coq",
                 [
                     {
                         "function": {
                             "name": "return_sub_skill_result",
                             "arguments": {
                                 "summary": (
-                                    '{"selected_route":"direct_memory",'
-                                    '"confidence_score":0.83,'
-                                    '"reason_code":"single_hop"}'
+                                    '{"is_sufficient":true,'
+                                    '"confidence_score":0.91,'
+                                    '"reason_code":"coq_sufficient",'
+                                    '"answer_candidate":"alice"}'
                                 )
                             },
                         }
@@ -209,31 +204,19 @@ async def test_tool_select_sub_skill_summary_sets_route_metrics(
         QueryParam(query="hello", limit=5, memory=memory),
     )
 
-    assert [item.uid for item in episodes] == ["route-1"]
-    assert metrics["selected_route"] == "direct_memory"
-    assert metrics["selected_skill"] == "direct_memory"
-    assert metrics["confidence_score"] == 0.83
-    assert metrics["reason_code"] == "single_hop"
-    assert metrics["orchestrator_sub_skill_count"] == 1
-    assert metrics["top_level_session_invocation_count"] == 1
-    trace = metrics["orchestrator_trace"]
-    assert isinstance(trace, dict)
-    spawn_call = trace["tool_calls"][0]
-    assert spawn_call["tool_name"] == "spawn_sub_skill"
-    assert spawn_call["arguments"]["summary"] == (
-        '{"selected_route":"direct_memory","confidence_score":0.83,'
-        '"reason_code":"single_hop"}'
-    )
-    selector_decision = spawn_call["arguments"]["selector_decision"]
-    assert selector_decision["selected_route"] == "direct_memory"
-    assert selector_decision["selected_skill"] == "direct_memory"
+    assert [item.uid for item in episodes] == ["route-coq"]
+    assert metrics["latest_sufficiency_signal_skill"] == "coq"
+    assert metrics["evidence_sufficient"] is True
+    assert metrics["top_level_is_sufficient"] is True
+    assert metrics["selected_skill"] == "coq"
+    assert metrics["selected_skill_name"] == "ChainOfQuerySkill"
 
 
 @pytest.mark.asyncio
-async def test_invalid_tool_select_summary_is_ignored(
+async def test_split_sub_skill_is_reflected_in_selected_skill_name(
     query_policy: QueryPolicy,
 ) -> None:
-    episode = _build_episode("route-2")
+    episode = _build_episode("route-split")
     memory = FakeEpisodicMemory({"hello": [episode]})
     model = ScriptedLanguageModel(
         outputs=[
@@ -244,129 +227,34 @@ async def test_invalid_tool_select_summary_is_ignored(
                         "function": {
                             "name": "spawn_sub_skill",
                             "arguments": {
-                                "skill_name": "tool_select",
+                                "skill_name": "split",
                                 "query": "hello",
+                                "rationale": "independent branches",
                             },
-                        }
-                    },
-                    {
-                        "function": {
-                            "name": "direct_memory_search",
-                            "arguments": {"query": "hello"},
                         }
                     },
                     {
                         "function": {
                             "name": "return_final",
-                            "arguments": {"final_response": "ok"},
-                        }
-                    },
-                ],
-            ),
-            (
-                "selector",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {"summary": "not-json"},
-                        }
-                    }
-                ],
-            ),
-        ]
-    )
-
-    skill = _build_skill(model)
-    _episodes, metrics = await skill.do_query(
-        query_policy,
-        QueryParam(query="hello", limit=5, memory=memory),
-    )
-
-    assert "selected_route" not in metrics
-    trace = metrics["orchestrator_trace"]
-    assert isinstance(trace, dict)
-    assert any(
-        event.get("event_type") == "tool_select_invalid_summary"
-        for event in trace.get("events", [])
-    )
-
-
-@pytest.mark.asyncio
-async def test_first_tool_select_decision_is_preserved_when_selector_runs_again(
-    query_policy: QueryPolicy,
-) -> None:
-    episode = _build_episode("route-3")
-    memory = FakeEpisodicMemory({"hello": [episode]})
-    model = ScriptedLanguageModel(
-        outputs=[
-            (
-                "top-level",
-                [
-                    {
-                        "function": {
-                            "name": "spawn_sub_skill",
                             "arguments": {
-                                "skill_name": "tool_select",
-                                "query": "hello",
-                                "rationale": "initial route selection",
+                                "final_response": "ok",
+                                "is_sufficient": False,
                             },
                         }
                     },
-                    {
-                        "function": {
-                            "name": "spawn_sub_skill",
-                            "arguments": {
-                                "skill_name": "tool_select",
-                                "query": "Date of death of Fleetwood Sheppard",
-                                "rationale": "branch follow-up route selection",
-                            },
-                        }
-                    },
-                    {
-                        "function": {
-                            "name": "direct_memory_search",
-                            "arguments": {"query": "hello"},
-                        }
-                    },
-                    {
-                        "function": {
-                            "name": "return_final",
-                            "arguments": {"final_response": "ok"},
-                        }
-                    },
                 ],
             ),
             (
-                "selector-1",
+                "split",
                 [
                     {
                         "function": {
                             "name": "return_sub_skill_result",
                             "arguments": {
                                 "summary": (
-                                    '{"selected_skill":"split",'
-                                    '"selected_route":"decompose",'
-                                    '"confidence_score":0.92,'
-                                    '"reason_code":"independent_multi_entity"}'
-                                )
-                            },
-                        }
-                    }
-                ],
-            ),
-            (
-                "selector-2",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"direct_memory",'
-                                    '"selected_route":"direct_memory",'
-                                    '"confidence_score":0.94,'
-                                    '"reason_code":"single_hop_direct"}'
+                                    '{"sub_queries":["a?","b?"],'
+                                    '"reason_code":"split_needed",'
+                                    '"reason_note":"parallel lookups"}'
                                 )
                             },
                         }
@@ -382,24 +270,16 @@ async def test_first_tool_select_decision_is_preserved_when_selector_runs_again(
         QueryParam(query="hello", limit=5, memory=memory),
     )
 
-    assert [item.uid for item in episodes] == ["route-3"]
-    assert metrics["selected_route"] == "decompose"
+    assert episodes == []
     assert metrics["selected_skill"] == "split"
     assert metrics["selected_skill_name"] == "SplitSkill"
-    assert metrics["latest_selected_route"] == "direct_memory"
-    assert metrics["latest_selected_skill"] == "direct_memory"
-    decisions = metrics["selector_decisions"]
-    assert isinstance(decisions, list)
-    assert len(decisions) == 2
-    assert decisions[0]["selected_skill"] == "split"
-    assert decisions[1]["selected_skill"] == "direct_memory"
 
 
 @pytest.mark.asyncio
-async def test_tool_select_invalid_summary_retries_once_then_fallback(
+async def test_removed_tool_select_sub_skill_is_rejected_by_runtime(
     query_policy: QueryPolicy,
 ) -> None:
-    fallback_episode = _build_episode("route-fallback")
+    fallback_episode = _build_episode("fallback-removed")
     memory = FakeEpisodicMemory({"hello": [fallback_episode]})
     model = ScriptedLanguageModel(
         outputs=[
@@ -412,6 +292,7 @@ async def test_tool_select_invalid_summary_retries_once_then_fallback(
                             "arguments": {
                                 "skill_name": "tool_select",
                                 "query": "hello",
+                                "rationale": "legacy route selection",
                             },
                         }
                     },
@@ -423,28 +304,6 @@ async def test_tool_select_invalid_summary_retries_once_then_fallback(
                     },
                 ],
             ),
-            (
-                "selector-1",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {"summary": "not-json"},
-                        }
-                    }
-                ],
-            ),
-            (
-                "selector-2",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {"summary": "still-not-json"},
-                        }
-                    }
-                ],
-            ),
         ]
     )
 
@@ -454,77 +313,5 @@ async def test_tool_select_invalid_summary_retries_once_then_fallback(
         QueryParam(query="hello", limit=5, memory=memory),
     )
 
-    assert [item.uid for item in episodes] == ["route-fallback"]
-    assert metrics["fallback_trigger_reason"] == "selector_unclassifiable"
-    malformed = metrics["selector_malformed_results"]
-    assert isinstance(malformed, list)
-    assert len(malformed) == 2
-    assert malformed[0]["summary"] == "not-json"
-    assert malformed[1]["summary"] == "still-not-json"
-    trace = metrics["orchestrator_trace"]
-    assert isinstance(trace, dict)
-    assert any(
-        event.get("event_type") == "tool_select_retry"
-        for event in trace.get("events", [])
-    )
-    fallback_call = trace["tool_calls"][-1]
-    assert fallback_call["tool_name"] == "direct_memory_search"
-    assert fallback_call["arguments"]["selector_malformed_results"] == malformed
-
-
-@pytest.mark.asyncio
-async def test_tool_select_low_confidence_forces_direct_memory_fallback(
-    query_policy: QueryPolicy,
-) -> None:
-    fallback_episode = _build_episode("route-low-confidence")
-    memory = FakeEpisodicMemory({"hello": [fallback_episode]})
-    model = ScriptedLanguageModel(
-        outputs=[
-            (
-                "top-level",
-                [
-                    {
-                        "function": {
-                            "name": "spawn_sub_skill",
-                            "arguments": {
-                                "skill_name": "tool_select",
-                                "query": "hello",
-                            },
-                        }
-                    },
-                    {
-                        "function": {
-                            "name": "return_final",
-                            "arguments": {"final_response": "ok"},
-                        }
-                    },
-                ],
-            ),
-            (
-                "selector",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"coq",'
-                                    '"confidence_score":0.15,'
-                                    '"reason_code":"low_conf"}'
-                                )
-                            },
-                        }
-                    }
-                ],
-            ),
-        ]
-    )
-
-    skill = _build_skill(model)
-    episodes, metrics = await skill.do_query(
-        query_policy,
-        QueryParam(query="hello", limit=5, memory=memory),
-    )
-
-    assert [item.uid for item in episodes] == ["route-low-confidence"]
-    assert metrics["fallback_trigger_reason"] == "low_confidence_route"
+    assert [item.uid for item in episodes] == ["fallback-removed"]
+    assert metrics["fallback_trigger_reason"] == "invalid_tool_call"
