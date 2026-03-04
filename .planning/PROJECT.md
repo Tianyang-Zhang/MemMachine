@@ -3,9 +3,12 @@
 ## What This Is
 
 This project replaced the legacy retrieval-agent pipeline with a skill-first,
-workflow-driven retrieval system in MemMachine. Retrieval now runs through a
-top-level orchestration layer that can route queries, run decomposition skills,
-and aggregate final outputs while preserving direct MemMachine fallback safety.
+workflow-driven retrieval system in MemMachine. Retrieval runs through a
+top-level orchestrator with decomposition skills and fallback behavior.
+
+The next milestone focuses on sufficiency-aware skill behavior, LLM-driven
+episode filtering decisions, and split live verification using full child-call
+context.
 
 ## Core Value
 
@@ -15,16 +18,22 @@ to direct memory search when confidence is low or execution is unstable.
 ## Current State
 
 - Milestone `v1.0 Skill style retrieval agent` shipped on 2026-03-02.
-- Roadmap and requirements for v1.0 are archived under `.planning/milestones/`.
-- Runtime terminology is skill-first across active retrieval paths.
+- v1.0 roadmap and requirements are archived under `.planning/milestones/`.
+- Active retrieval runtime is skill-first across server, tests, and evaluation.
 
-## Next Milestone Goals
+## Current Milestone: v1.1 Sufficiency-Aware Skill Verification
 
-- OPT-01: Tune prompts and routing/fallback policies for retrieval quality.
-- OPT-02: Define onboarding checks for adding new skills beyond
-  `select/coq/split/fallback`.
-- OPT-03: Establish repeatable comparative evaluation baselines for policy
-  variants.
+**Goal:** Add per-skill sufficiency logging and live split verification while
+preserving LLM control of filtering decisions.
+
+**Target features:**
+- Per-skill (`coq`, `split`, top-level) sufficiency/confidence outputs for
+  logging and evaluation artifacts.
+- Split live verification pass after branch execution, with optional branch
+  re-run during verification.
+- LLM-visible episode-review/filter workflow before final return decisions.
+- Top-level metrics updated to expose top-level sufficiency signals.
+- 100-question WikiMultiHop benchmark rerun after implementation.
 
 ## Requirements
 
@@ -48,33 +57,49 @@ to direct memory search when confidence is low or execution is unstable.
 
 ### Active
 
-- [ ] OPT-01: Accuracy/policy tuning campaign.
-- [ ] OPT-02: New-skill onboarding contract and safety checklist.
-- [ ] OPT-03: Repeatable A/B evaluation harness for retrieval policies.
+- [ ] SUFF-01: `coq`, `split`, and top-level each emit internal
+  `is_sufficient`/confidence signals for logging, perf metrics, and evaluation
+  JSON.
+- [ ] SUFF-02: Parent skills produce their own sufficiency judgement from
+  retrieved episodes/context, independent of child `is_sufficient` values.
+- [ ] FILT-01: Skills support LLM-led review of retrieved episodes before next
+  action/final return decisions.
+- [ ] FILT-02: On insufficient state, workflow keeps all episodes if no
+  high-confidence episode exists; otherwise keeps high-confidence related
+  episodes for follow-up reasoning.
+- [ ] SPLT-01: `split` adds one live verification pass after branch execution,
+  with ability to rerun branches during verification when needed.
+- [ ] CONT-01: Upper-level skill in call tree receives full lower-level return
+  context needed for verification and filtering decisions.
+- [ ] METR-01: Top-level sufficiency is recorded as first-class metric/tracing
+  signal alongside sub-skill sufficiency signals.
+- [ ] BENCH-01: Run `./run_test.sh wikimultihop optv2 search retrieval_skill 100`
+  and store benchmark output artifact for this milestone.
 
 ### Out of Scope
 
-- Long-lived dual execution mode between legacy and skill runtime.
-- Broad expansion of skill families before optimization goals are baselined.
+- Adding new skill families beyond `tool_select/coq/split/direct_memory` in
+  this milestone.
+- Reworking fallback policy strategy unrelated to sufficiency/filter flow.
+- Runtime auto-pruning logic that overrides LLM-selected filtering behavior.
 
 ## Context
 
-v1.0 completed the migration from legacy retrieval-agent naming and runtime
-paths to skill-first runtime wiring. Evaluation and tests now target
-`retrieval_skill` paths, and retrieval traces expose orchestration decisions
-for inspection.
+v1.1 scope is driven by the current conversation:
+- Keep parent sufficiency decisions independent from child sufficiency outputs.
+- Add per-skill sufficiency output contracts for observability.
+- Preserve LLM control of filtering decisions; runtime should expose context and
+  capture outputs, not enforce hidden heuristics.
+- Enable split post-branch live verification with branch rerun capability.
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Use SKILL.md-style workflow architecture | Higher orchestration flexibility and explicit skill control | [x] Adopted in v1.0 |
-| Introduce top-level `retrieve-skill` above routing | Needed to coordinate multi-skill chains and result aggregation | [x] Adopted in v1.0 |
-| Allow multi-skill sequences per query | Improves handling of complex query structures | [x] Adopted in v1.0 |
-| Define v1 core skills as `select/coq/split/fallback` | Minimal complete set matching current behavior classes | [x] Adopted in v1.0 |
-| Use direct MemMachine pass-through as fallback | Ensures graceful degradation on low confidence/errors/timeouts | [x] Adopted in v1.0 |
-| Remove legacy agent path after wiring new flow | Avoid dual-path complexity and single source of truth drift | [x] Adopted in v1.0 |
-| Prioritize functionality over score in this milestone | Migration risk reduction before optimization work | [x] Adopted in v1.0 |
+| Parent sufficiency is independent of child sufficiency | Avoid chained truth assumptions across levels | — Pending (v1.1) |
+| Add top-level sufficiency metric parity with sub-skills | Improve debug/evaluation observability | — Pending (v1.1) |
+| Split gets one live verification pass after branch execution | Needed to verify with full branch context | — Pending (v1.1) |
+| Keep benchmark gate in milestone scope | Validate behavior impact on real retrieval tasks | — Pending (v1.1) |
 
 ---
-*Last updated: 2026-03-02 after v1.0 milestone completion*
+*Last updated: 2026-03-04 after v1.1 milestone initialization*
