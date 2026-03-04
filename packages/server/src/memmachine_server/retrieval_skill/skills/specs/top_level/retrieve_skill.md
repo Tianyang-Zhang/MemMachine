@@ -33,14 +33,106 @@ searches.
 
 1. Maintain one global orchestrator state through completion.
 2. Route-selection ownership is top-level policy:
-   - choose one initial execution skill directly:
-     `direct_memory`, `coq`, or `split`
-   - do not spawn `tool_select` as a sub-skill
-3. Route selection heuristics:
-   - use `coq` when query requires dependent multi-hop resolution
-   - use `split` when query has independent branches that can be answered in
-     parallel
-   - use `direct_memory` for straightforward single-hop lookup
+   - Choose one initial execution skill directly:
+     `direct_memory`, `coq`, or `split`.
+   - Do not spawn `tool_select` as a sub-skill.
+   - Perform an internal selector decision before first retrieval action with
+     this shape:
+     `selected_skill`, `selected_route`, `confidence_score`, `reason_code`,
+     `reason_note`.
+3. Embedded selector mechanism for the first route decision:
+   - Follow this mechanism exactly.
+   - Validate input first:
+     - Treat the query as unclassifiable when it is empty, whitespace-only,
+       null-like, non-linguistic garbage, or otherwise not a classifiable
+       request.
+     - For unclassifiable input, choose low-confidence direct-memory with
+       `reason_code=selector_unclassifiable`.
+   - Classify query type using only query text:
+     - Use only the query text. Do not use external context or hidden
+       assumptions.
+     - Multi-hop dependency chain -> `coq`:
+       - Choose `coq` when the query requires two or more dependent steps where
+         a later lookup depends on an earlier result.
+       - Common signals:
+         - explicit dependency markers: "then", "after", "using that",
+           "based on that", "from there", "which of those", "once you find",
+           "given the answer to", "trace", "derive"
+         - relationship chains requiring intermediate resolution
+         - possessive dependency chains where a relative/entity must be
+           resolved before the final attribute can be answered (for example,
+           "X's mother ... where did she die?")
+         - role-then-attribute patterns, where you must first identify a role
+           holder and then answer about that role holder (for example:
+           director/author/spouse/parent/grandparent/founder/performer +
+           nationality/workplace/death date)
+         - kinship-chain questions (maternal/paternal,
+           grandfather/grandmother, etc.) that require traversing family
+           relations before answering
+         - comparisons/timelines that first require derived intermediate facts
+       - Force `coq` for relation-chain templates like:
+         `director of film ... (birthplace/death place/award/spouse/child/parent/work at)`,
+         `mother/father/husband/wife/spouse/child of ...`,
+         or `place/date/country of ...` where an intermediate entity must be
+         found first.
+       - Tie-breaker: if any explicit dependency chain exists, classify as
+         multi-hop.
+       - Dependency litmus tests:
+         - If the query can be rewritten as "First find entity A, then answer
+           B about A", it is `coq`.
+         - If answering requires resolving an entity not already explicit in
+           final form (for example, "the X of Y"), it is usually `coq`.
+         - For compositional/inference-style relation chains, prefer `coq`
+           over `direct_memory`.
+     - Single-hop with multiple independent entities/keywords -> `split`:
+       - Choose `split` when the query can be answered through independent
+         lookups that can be combined without dependency on prior lookup
+         results.
+       - Common signals:
+         - conjunctions: "A and B", "A, B, and C", "for each of",
+           "separately"
+         - multiple independent questions in one message
+         - direct comparisons where both sides are directly look-up-able
+     - Single-hop direct lookup -> `direct_memory`:
+       - Choose `direct_memory` when the query is one straightforward lookup
+         about one main subject and does not require dependency decomposition or
+         branch splitting.
+       - Direct-memory guardrails:
+         - Do NOT choose `direct_memory` when the query target is an attribute
+           of an intermediate entity reached through a relation chain.
+         - Do NOT choose `direct_memory` for nested "of ... of ..." relation
+           chains that require at least one entity-resolution step.
+         - Use `direct_memory` only when the asked fact is directly about the
+           stated main subject without dependent resolution.
+   - Deterministic mapping:
+     - `coq` -> `selected_route=decompose`
+     - `split` -> `selected_route=decompose`
+     - `direct_memory` -> `selected_route=direct_memory`
+   - Confidence policy:
+     - If uncertain, lower confidence rather than inventing certainty.
+   - Reason-note specificity:
+     - When classifying dependency-chain queries as `coq`, include the final
+       target attribute type in `reason_note` when obvious from query text
+       (for example: country, workplace organization, birth/death location,
+       year/date, kinship person). This is for downstream decomposition focus
+       only.
+   - One-decision rule:
+     - Emit one selector decision only (internally). No competing
+       alternatives.
+   - Selector examples:
+     - `Who is the author of Dune?` -> `direct_memory`,
+       `selected_route=direct_memory`, `reason_code=single_hop_direct`.
+     - `Give the capitals of Spain and Portugal.` -> `split`,
+       `selected_route=decompose`, `reason_code=independent_multi_entity`.
+     - `Find the spouse of Marie Curie, then name his primary field.` ->
+       `coq`, `selected_route=decompose`,
+       `reason_code=explicit_dependency_chain`.
+     - `...` -> `direct_memory`, `selected_route=direct_memory`,
+       `reason_code=selector_unclassifiable`, low confidence.
+   - Selector failure-mode bans:
+     - Never return multiple competing route decisions.
+     - Never use legacy old-style tool labels; emit canonical skill labels.
+     - Never add decision factors not present in the query text.
 4. Parent decision independence rule:
    - Child `is_sufficient` signals are useful for logging and debugging.
    - Top-level must still compute its own sufficiency from merged evidence and
@@ -70,6 +162,8 @@ searches.
    - After `split` emits branch queries, top-level must choose each branch
      execution skill directly (`coq` or `direct_memory`).
    - Do not recurse `split` for split-branch execution.
+   - If a relation-chain query was attempted with `direct_memory` and still
+     lacks target-attribute evidence, immediately escalate to `coq`.
    - If a `coq` run ends with `is_sufficient=false` and a non-empty actionable
      `new_query`, run one targeted `direct_memory_search` using that `new_query`
      before finalizing (unless an equivalent query was already attempted).
