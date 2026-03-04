@@ -714,6 +714,14 @@ class RetrieveSkill(SkillToolBase):
                         why="spawn_sub_skill requires skill_name.",
                         fallback_reason="invalid_tool_call",
                     )
+                if action.skill_name not in self._available_sub_skills:
+                    self._raise_contract_error(
+                        why=(
+                            "spawn_sub_skill skill_name not allowed: "
+                            f"{action.skill_name}. Allowed: {self._available_sub_skills}"
+                        ),
+                        fallback_reason="invalid_tool_call",
+                    )
 
                 hop_count += 1
                 branch_count += 1
@@ -731,22 +739,7 @@ class RetrieveSkill(SkillToolBase):
                         fallback_reason="max_branches_exceeded",
                     )
 
-                normalized_target_skill = (
-                    action.skill_name.replace("-", "_").lower()
-                )
                 sub_query = action.query or query.query
-                if normalized_target_skill == "coq":
-                    requested_query = sub_query
-                    sub_query = query.query
-                    if requested_query.strip() != query.query.strip():
-                        session.record_event(
-                            actor="top-level",
-                            event_type="coq_query_overridden",
-                            detail=(
-                                "CoQ sub-skill query overridden to original query; "
-                                f"requested={requested_query[:160]}"
-                            ),
-                        )
 
                 async def _run_sub_skill_once() -> SubSkillExecutionResult:
                     nonlocal guardrail_retry_count
@@ -1140,10 +1133,9 @@ class RetrieveSkill(SkillToolBase):
                     and normalized_confidence >= 0.8
                     and not selected_episode_indices
                 ):
-                    # High-confidence + empty selected evidence falls back to all.
-                    aggregated_metrics["top_level_selected_evidence_fallback"] = (
-                        "all_episodes"
-                    )
+                    # Keep backward-compatible return-all behavior when no
+                    # explicit evidence selection is emitted.
+                    pass
                 aggregated_metrics["top_level_sufficiency_signal_seen"] = True
                 aggregated_metrics["top_level_is_sufficient"] = top_level_is_sufficient
                 aggregated_metrics["top_level_sufficiency_signal_source"] = (

@@ -191,11 +191,8 @@ When `is_sufficient=true`:
 - include `answer_candidate` as the canonical short answer string
 - ensure `reason_note` states why the selected candidate is the best-supported
   target value when multiple related facts appear
-- if confidence is high (`>=0.8`), return `selected_episode_indices` with the
-  evidence you trust most
-- if high confidence but no explicit selection is possible, keep fallback
-  behavior by returning no `selected_episode_indices` and note fallback-to-all
-  in `reason_note`
+- `selected_episode_indices` is optional metadata only; include it when useful
+  for trace/evaluation.
 
 Never issue another `memmachine_search` after sufficiency is reached.
 
@@ -210,10 +207,8 @@ When still insufficient:
   already resolved)
 - set `answer_candidate` to empty string when insufficient
 - identify `related_episode_indices` for useful intermediate evidence
-- if any related evidence has confidence `>=0.7`, set
-  `selected_episode_indices` to those high-confidence indices
-- if no related evidence reaches `0.7`, use fallback-to-all behavior (leave
-  `selected_episode_indices` empty and reflect fallback in `reason_note`)
+- `selected_episode_indices` remains optional metadata; runtime keeps
+  return-all-up-to-limit behavior regardless of selection metadata.
 
 ### 10. Confidence calibration
 

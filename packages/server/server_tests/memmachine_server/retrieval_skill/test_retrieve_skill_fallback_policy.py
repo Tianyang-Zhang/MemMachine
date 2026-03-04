@@ -368,7 +368,22 @@ async def test_split_branch_failure_triggers_fallback(
     memory = FakeEpisodicMemory({"hello": [fallback_episode]})
     model = PolicyLanguageModel(
         outputs=[
-            ("top-level", [_spawn_split_call("hello"), _return_final_call()]),
+            (
+                "top-level",
+                [
+                    _spawn_split_call("hello"),
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "coq",
+                                "query": "branch then detail",
+                            },
+                        }
+                    },
+                    _return_final_call(),
+                ],
+            ),
             (
                 "split-planner",
                 [
@@ -383,29 +398,7 @@ async def test_split_branch_failure_triggers_fallback(
                 ],
             ),
             (
-                "branch-selector",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"coq",'
-                                    '"selected_route":"decompose",'
-                                    '"confidence_score":0.92,'
-                                    '"reason_code":"explicit_dependency_chain"}'
-                                )
-                            },
-                        }
-                    }
-                ],
-            ),
-            (
                 "coq-attempt-1",
-                [{"function": {"name": "unknown_tool", "arguments": {}}}],
-            ),
-            (
-                "coq-attempt-2",
                 [{"function": {"name": "unknown_tool", "arguments": {}}}],
             ),
         ],
@@ -418,4 +411,4 @@ async def test_split_branch_failure_triggers_fallback(
     )
 
     assert [item.uid for item in episodes] == ["split-fallback"]
-    assert metrics["fallback_trigger_reason"] == "split_branch_failure"
+    assert metrics["fallback_trigger_reason"] == "sub_skill_exception"

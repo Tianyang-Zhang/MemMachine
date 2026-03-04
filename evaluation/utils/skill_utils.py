@@ -47,7 +47,6 @@ from memmachine_server.retrieval_skill.subskills.direct_memory_skill import (
 
 RETRIEVE_SKILL_NAME = "RetrieveSkill"
 DIRECT_MEMORY_SKILL_NAME = "MemMachineSkill"
-SELECTOR_SKILL_METRIC_LABEL = "ToolSelectSkill"
 
 
 def _normalize_sub_skill_name(raw_name: str) -> str | None:
@@ -156,10 +155,7 @@ def _build_retrieval_answer_hint(perf_metrics: dict[str, Any]) -> str:
             f"Answer candidate: {answer_candidate.strip()}. "
             f"Reason: {reason_note.strip()}."
         )
-    return (
-        "[Retrieval-Skill Summary] "
-        f"Answer candidate: {answer_candidate.strip()}."
-    )
+    return f"[Retrieval-Skill Summary] Answer candidate: {answer_candidate.strip()}."
 
 
 def _metric_as_int(value: object) -> int:
@@ -324,15 +320,9 @@ def init_attribute_matrix() -> dict[str, Any]:
         "tools_hits": {},  # dict[str, int]
         "tools_facts": {},  # dict[str, int]
         "tools_episodes": {},  # dict[str, int]
-        "tools_input_tokens": {
-            SELECTOR_SKILL_METRIC_LABEL: 0,
-        },  # dict[str, int]
-        "tools_output_tokens": {
-            SELECTOR_SKILL_METRIC_LABEL: 0,
-        },  # dict[str, int]
-        "tools_llm_calls": {
-            SELECTOR_SKILL_METRIC_LABEL: 0,
-        },  # dict[str, int]
+        "tools_input_tokens": {},  # dict[str, int]
+        "tools_output_tokens": {},  # dict[str, int]
+        "tools_llm_calls": {},  # dict[str, int]
         "num_facts": 0,
         "num_hits": 0,
         "num_episodes_retrieved": 0,
@@ -400,15 +390,6 @@ def update_results(
         attribute_matrix["tools_input_tokens"][tool] += input_tokens
         attribute_matrix["tools_output_tokens"][tool] += output_tokens
         attribute_matrix["tools_llm_calls"][tool] += llm_call_count
-        attribute_matrix["tools_input_tokens"][SELECTOR_SKILL_METRIC_LABEL] += response.get(
-            "tool_select_input_token", 0
-        )
-        attribute_matrix["tools_output_tokens"][SELECTOR_SKILL_METRIC_LABEL] += response.get(
-            "tool_select_output_token", 0
-        )
-        attribute_matrix["tools_llm_calls"][SELECTOR_SKILL_METRIC_LABEL] += _metric_as_int(
-            response.get("tool_select_llm_call_count", 0)
-        )
         attribute_matrix["memory_retrieval_time_total"] += response.get(
             "memory_retrieval_time", 0
         )
@@ -482,22 +463,6 @@ def update_final_attribute_matrix(
     Avg LLM Call per Question: {tools_llm_calls[tool] / tools_called[tool]:.2f}
 """
 
-    selector_avg_input_tokens = (
-        tools_input_tokens[SELECTOR_SKILL_METRIC_LABEL] / num_questions
-        if num_questions > 0
-        else 0.0
-    )
-    selector_avg_output_tokens = (
-        tools_output_tokens[SELECTOR_SKILL_METRIC_LABEL] / num_questions
-        if num_questions > 0
-        else 0.0
-    )
-    selector_avg_llm_calls = (
-        tools_llm_calls[SELECTOR_SKILL_METRIC_LABEL] / num_questions
-        if num_questions > 0
-        else 0.0
-    )
-
     customize_msgs = None
     customize_attributes = attribute_matrix["customize_attributes"]
     for key, val in customize_attributes.items():
@@ -513,9 +478,6 @@ def update_final_attribute_matrix(
 {test_preffix} Average Memory Retrieval Time per Question: {memory_retrieval_time_avg:.2f} seconds
 {test_preffix} Average LLM Time per Question (only for questions that used LLM): {llm_time_avg:.2f} seconds
 {tools_report}
-{SELECTOR_SKILL_METRIC_LABEL} Avg Input Tokens per Question: {selector_avg_input_tokens:.2f}
-{SELECTOR_SKILL_METRIC_LABEL} Avg Output Tokens per Question: {selector_avg_output_tokens:.2f}
-{SELECTOR_SKILL_METRIC_LABEL} Avg LLM Call per Question: {selector_avg_llm_calls:.2f}
 {customize_msgs if customize_msgs is not None else ""}
 """
 

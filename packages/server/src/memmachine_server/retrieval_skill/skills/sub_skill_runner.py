@@ -740,7 +740,9 @@ class SubSkillRunner:
             execution_skill = branch_selection.execution_skill
             for attempt in range(self._split_branch_retry_limit + 1):
                 try:
-                    next_param = self._query_with_override(query, branch_selection.query)
+                    next_param = self._query_with_override(
+                        query, branch_selection.query
+                    )
                     if execution_skill in {"coq", "split"}:
                         branch_skill_result = await self.run(
                             skill_name=execution_skill,
@@ -1036,17 +1038,14 @@ class SubSkillRunner:
                     }
                 )
 
-            verification_user_prompt = (
-                "split verification context: "
-                + json.dumps(
-                    {
-                        "mode": "verification",
-                        "original_query": query.query,
-                        "planner_summary": planner_result.summary,
-                        "branches": verification_branch_context,
-                    },
-                    ensure_ascii=True,
-                )
+            verification_user_prompt = "split verification context: " + json.dumps(
+                {
+                    "mode": "verification",
+                    "original_query": query.query,
+                    "planner_summary": planner_result.summary,
+                    "branches": verification_branch_context,
+                },
+                ensure_ascii=True,
             )
             verification_result = await self._run_standard_skill(
                 skill_name=skill_name,
@@ -1264,7 +1263,9 @@ class SubSkillRunner:
         """Execute one sub-skill and return merged episodes + tool-call records."""
         spec = self._load_sub_skill_spec(skill_name)
         if self._normalize_skill_name(skill_name) == "split":
-            return await self._run_split_skill(
+            # Top-level orchestrator owns branch routing/execution decisions.
+            # Split sub-skill now emits decomposition output only.
+            return await self._run_standard_skill(
                 skill_name=skill_name,
                 spec=spec,
                 policy=policy,

@@ -26,10 +26,8 @@ Transform one query into either:
 - multiple independent single-hop sub-queries, or
 - the original query unchanged,
 
-so runtime can execute branches in parallel when splitting is justified.
-Branch execution routing is decided by `tool_select` per branch query.
-After branches run, this skill also performs one live verification pass to
-assess sufficiency and optional reruns.
+so top-level runtime can execute branches in parallel when splitting is
+justified.
 
 ## Rules
 
@@ -96,18 +94,11 @@ Pronouns/ambiguous references:
 Do not emit duplicate lines requesting the same attribute for the same
 entity/timeframe/context.
 
-### 7. Verification pass behavior
+### 7. Top-level-owned branch execution
 
-When runtime provides split-branch execution context, run verification mode:
-- compute your own `is_sufficient` judgment from branch evidence context
-- do not treat child skill `is_sufficient` booleans as authoritative truth
-- identify `related_episode_indices` for evidence relevant to the original query
-- if insufficient and any related evidence has confidence `>=0.7`, set
-  `selected_episode_indices` to those high-confidence indices
-- if insufficient and no related evidence reaches `0.7`, keep fallback-to-all
-  behavior (leave `selected_episode_indices` empty and explain fallback)
-- optionally request reruns with `rerun_branch_queries` when verification shows
-  targeted branch retries can improve sufficiency
+- Split returns branch-plan output only.
+- Top-level skill decides branch routing/execution (`coq` or `direct_memory`).
+- Split must not assume branch execution happened.
 
 ## Tools
 
@@ -119,17 +110,12 @@ Return one JSON object as the `summary` value in `return_sub_skill_result`.
 
 `v1` required fields:
 - `sub_queries`: array of query strings
-- `is_sufficient`: boolean
-- `confidence_score`: number in `[0.0, 1.0]`
 - `reason_code`: short snake_case code
 - `reason_note`: short human-readable note (empty string allowed)
 
 `v1` optional fields:
 - `kept_original`: boolean
 - `line_count`: integer
-- `related_episode_indices`: array of integer indices (0-based)
-- `selected_episode_indices`: array of integer indices (0-based)
-- `rerun_branch_queries`: array of query strings
 
 Fail-closed requirements:
 - `sub_queries` must contain 1-6 lines total
@@ -138,9 +124,8 @@ Fail-closed requirements:
 - each line must be a full question ending with `?`
 - no numbering, bullets, headings, quotes, or blank lines
 - no banned derived-operation wording in split lines
-- when `selected_episode_indices` is emitted, indices must be non-negative
-- when high-confidence sufficient (`>=0.8`) but no evidence selection is
-  possible, note fallback-to-all in `reason_note`
+- top-level keeps merged evidence return behavior; split should not encode
+  runtime episode pruning logic
 
 ## Examples
 

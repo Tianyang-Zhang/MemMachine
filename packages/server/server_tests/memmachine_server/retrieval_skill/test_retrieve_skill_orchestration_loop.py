@@ -370,7 +370,7 @@ async def test_tool_protocol_invalid_action_triggers_fallback(
 
 
 @pytest.mark.asyncio
-async def test_split_sub_skill_records_branch_metrics_and_applies_final_rerank(
+async def test_top_level_routes_split_branches_and_applies_final_rerank(
     query_policy: QueryPolicy,
 ) -> None:
     split_a = _build_episode("split-a", "split evidence a")
@@ -393,6 +393,24 @@ async def test_split_sub_skill_records_branch_metrics_and_applies_final_rerank(
                             "arguments": {
                                 "skill_name": "split",
                                 "query": "hello",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "direct_memory",
+                                "query": "branch direct",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "coq",
+                                "query": "branch coq then detail",
                             },
                         }
                     },
@@ -421,37 +439,12 @@ async def test_split_sub_skill_records_branch_metrics_and_applies_final_rerank(
                 ],
             ),
             (
-                "branch selector 1",
+                "branch direct",
                 [
                     {
                         "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"direct_memory",'
-                                    '"selected_route":"direct_memory",'
-                                    '"confidence_score":0.89,'
-                                    '"reason_code":"single_hop_direct"}'
-                                )
-                            },
-                        }
-                    }
-                ],
-            ),
-            (
-                "branch selector 2",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"coq",'
-                                    '"selected_route":"decompose",'
-                                    '"confidence_score":0.91,'
-                                    '"reason_code":"explicit_dependency_chain"}'
-                                )
-                            },
+                            "name": "memmachine_search",
+                            "arguments": {"query": "branch direct"},
                         }
                     }
                 ],
@@ -489,24 +482,25 @@ async def test_split_sub_skill_records_branch_metrics_and_applies_final_rerank(
     )
 
     assert len(episodes) == 1
-    assert metrics["branch_total"] == 2
-    assert metrics["branch_success_count"] == 2
+    assert metrics["branch_total"] == 0
+    assert metrics["branch_success_count"] == 0
     assert metrics["branch_failure_count"] == 0
     assert metrics["rerank_applied"] is True
     sub_skill_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_skill_runs, list)
     assert sub_skill_runs[0]["skill_name"] == "split"
-    assert sub_skill_runs[0]["branch_total"] == 2
-    nested_memmachine_calls = [
+    split_summary_calls = [
         call
         for call in sub_skill_runs[0]["tool_calls"]
-        if call["tool_name"] == "split_branch_execution.memmachine_search"
+        if call["tool_name"] == "return_sub_skill_result"
     ]
-    assert len(nested_memmachine_calls) == 1
-    nested_lines = nested_memmachine_calls[0]["arguments"]["episodes_human_readable"]
-    assert isinstance(nested_lines, list)
-    assert len(nested_lines) == 1
-    assert "split evidence c" in nested_lines[0]
+    assert len(split_summary_calls) == 1
+    assert "sub_queries" in split_summary_calls[0]["arguments"]["summary"]
+    assert [run["skill_name"] for run in sub_skill_runs] == [
+        "split",
+        "direct_memory",
+        "coq",
+    ]
 
 
 @pytest.mark.asyncio
@@ -539,6 +533,24 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
                     },
                     {
                         "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "direct_memory",
+                                "query": branch_a_query,
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "direct_memory",
+                                "query": branch_b_query,
+                            },
+                        }
+                    },
+                    {
+                        "function": {
                             "name": "return_final",
                             "arguments": {"final_response": "done"},
                         }
@@ -566,37 +578,23 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
                 ],
             ),
             (
-                "branch selector 1",
+                "branch one",
                 [
                     {
                         "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"direct_memory",'
-                                    '"selected_route":"direct_memory",'
-                                    '"confidence_score":0.93,'
-                                    '"reason_code":"single_hop_direct"}'
-                                )
-                            },
+                            "name": "memmachine_search",
+                            "arguments": {"query": branch_a_query},
                         }
                     }
                 ],
             ),
             (
-                "branch selector 2",
+                "branch two",
                 [
                     {
                         "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"direct_memory",'
-                                    '"selected_route":"direct_memory",'
-                                    '"confidence_score":0.94,'
-                                    '"reason_code":"single_hop_direct"}'
-                                )
-                            },
+                            "name": "memmachine_search",
+                            "arguments": {"query": branch_b_query},
                         }
                     }
                 ],
@@ -610,24 +608,21 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
         QueryParam(query="hello", limit=5, memory=memory),
     )
 
-    assert metrics["branch_total"] == 2
-    assert metrics["branch_success_count"] == 2
+    assert metrics["branch_total"] == 0
+    assert metrics["branch_success_count"] == 0
     assert branch_a_query in memory.queries
     assert branch_b_query in memory.queries
     sub_skill_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_skill_runs, list)
-    split_calls = [
-        call
-        for call in sub_skill_runs[0]["tool_calls"]
-        if call["tool_name"] == "split_branch_selection"
+    assert [run["skill_name"] for run in sub_skill_runs] == [
+        "split",
+        "direct_memory",
+        "direct_memory",
     ]
-    selected_queries = [call["arguments"]["query"] for call in split_calls]
-    assert branch_a_query in selected_queries
-    assert branch_b_query in selected_queries
 
 
 @pytest.mark.asyncio
-async def test_split_verification_pass_can_request_branch_rerun(
+async def test_top_level_can_issue_follow_up_branch_after_split(
     query_policy: QueryPolicy,
 ) -> None:
     branch_initial = _build_episode("split-rerun-initial", "initial branch evidence")
@@ -654,6 +649,24 @@ async def test_split_verification_pass_can_request_branch_rerun(
                     },
                     {
                         "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "direct_memory",
+                                "query": "branch one",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "direct_memory",
+                                "query": "branch rerun",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
                             "name": "return_final",
                             "arguments": {"final_response": "done"},
                         }
@@ -666,64 +679,29 @@ async def test_split_verification_pass_can_request_branch_rerun(
                     {
                         "function": {
                             "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": '{"sub_queries":["branch one"]}'
-                            },
+                            "arguments": {"summary": '{"sub_queries":["branch one"]}'},
                         }
                     }
                 ],
             ),
             (
-                "branch selector",
+                "first branch",
                 [
                     {
                         "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"direct_memory",'
-                                    '"selected_route":"direct_memory",'
-                                    '"confidence_score":0.88,'
-                                    '"reason_code":"single_hop_direct"}'
-                                )
-                            },
+                            "name": "memmachine_search",
+                            "arguments": {"query": "branch one"},
                         }
                     }
                 ],
             ),
             (
-                "split verification",
+                "second branch",
                 [
                     {
                         "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"is_sufficient":false,'
-                                    '"confidence_score":0.62,'
-                                    '"reason_code":"missing_final_attribute",'
-                                    '"reason_note":"run one targeted rerun",'
-                                    '"rerun_branch_queries":["branch rerun"]}'
-                                )
-                            },
-                        }
-                    }
-                ],
-            ),
-            (
-                "rerun selector",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"selected_skill":"direct_memory",'
-                                    '"selected_route":"direct_memory",'
-                                    '"confidence_score":0.9,'
-                                    '"reason_code":"single_hop_direct"}'
-                                )
-                            },
+                            "name": "memmachine_search",
+                            "arguments": {"query": "branch rerun"},
                         }
                     }
                 ],
@@ -739,17 +717,18 @@ async def test_split_verification_pass_can_request_branch_rerun(
 
     assert "branch one" in memory.queries
     assert "branch rerun" in memory.queries
-    assert metrics["branch_total"] == 2
-    assert metrics["branch_success_count"] == 2
+    assert metrics["branch_total"] == 0
+    assert metrics["branch_success_count"] == 0
     sub_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_runs, list)
     split_run = sub_runs[0]
     assert split_run["skill_name"] == "split"
-    assert split_run["branch_total"] == 2
-    assert any(
-        call["tool_name"] == "split_verification_rerun_summary"
-        for call in split_run["tool_calls"]
-    )
+    assert split_run["branch_total"] == 0
+    assert [run["skill_name"] for run in sub_runs] == [
+        "split",
+        "direct_memory",
+        "direct_memory",
+    ]
 
 
 @pytest.mark.asyncio
@@ -844,10 +823,12 @@ async def test_coq_sub_skill_reuses_cached_results_for_near_duplicate_queries(
 
 
 @pytest.mark.asyncio
-async def test_top_level_coq_spawn_overrides_rewritten_query_to_original(
+async def test_top_level_coq_spawn_preserves_explicit_query_override(
     query_policy: QueryPolicy,
 ) -> None:
-    original_query = "Where did Prince Gustav of Thurn and Taxis (1848-1914)'s mother die?"
+    original_query = (
+        "Where did Prince Gustav of Thurn and Taxis (1848-1914)'s mother die?"
+    )
     rewritten_query = (
         "Decompose: 1) Identify the mother of Prince Gustav of Thurn and Taxis "
         "(1848-1914). 2) Find where she died."
@@ -905,7 +886,7 @@ async def test_top_level_coq_spawn_overrides_rewritten_query_to_original(
                                     '{"is_sufficient":true,'
                                     '"evidence_indices":[0],'
                                     '"new_query":"Where did Prince Gustav of Thurn and '
-                                    'Taxis (1848-1914)\'s mother die?",'
+                                    "Taxis (1848-1914)'s mother die?\","
                                     '"confidence_score":0.95,'
                                     '"reason_code":"sufficient_cumulative_evidence",'
                                     '"reason_note":"mother and death place found"}'
@@ -924,19 +905,12 @@ async def test_top_level_coq_spawn_overrides_rewritten_query_to_original(
         QueryParam(query=original_query, limit=5, memory=memory),
     )
 
-    assert [item.uid for item in episodes] == ["coq-original"]
-    assert memory.queries == [original_query]
+    assert [item.uid for item in episodes] == ["coq-rewritten"]
+    assert memory.queries == [rewritten_query]
     sub_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_runs, list)
     assert sub_runs[0]["skill_name"] == "coq"
-    assert sub_runs[0]["query"] == original_query
-    trace = metrics["orchestrator_trace"]
-    assert isinstance(trace, dict)
-    assert any(
-        event["event_type"] == "coq_query_overridden"
-        for event in trace.get("events", [])
-        if isinstance(event, dict)
-    )
+    assert sub_runs[0]["query"] == rewritten_query
 
 
 @pytest.mark.asyncio
