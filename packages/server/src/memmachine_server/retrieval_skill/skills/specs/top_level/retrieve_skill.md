@@ -167,29 +167,42 @@ searches.
    - If a `coq` run ends with `is_sufficient=false` and a non-empty actionable
      `new_query`, run one targeted `direct_memory_search` using that `new_query`
      before finalizing (unless an equivalent query was already attempted).
-9. LLM-led filtering semantics:
+9. Stage-result-first reasoning semantics:
+   - Treat `stage_results` from sub-skill summaries as the first evidence source
+     for top-level sufficiency reasoning.
+   - Use raw retrieved episodes as secondary support, conflict checks, and
+     insufficient-path recovery.
+   - Keep cumulative `stage_results` and `sub_queries` across steps.
+10. LLM-led filtering semantics:
    - When insufficient, examine all available episodes and identify those
      related to answering the original query.
    - `selected_episode_indices` is optional metadata for trace/evaluation only.
    - Keep return-all behavior: runtime returns merged evidence up to configured
      query limit after rerank; do not rely on selected indices for pruning.
-10. Sufficient high-confidence evidence selection:
+11. Sufficient high-confidence evidence selection:
    - When `is_sufficient=true`, include clear supporting evidence indices when
      available (`selected_episode_indices`).
    - If selection is empty, still return a valid final payload.
-11. Avoid repeated identical actions unless previous attempt clearly failed.
-12. Finalize only when evidence is sufficient or fallback guardrails require
+12. Avoid repeated identical actions unless previous attempt clearly failed.
+13. Finalize only when evidence is sufficient or fallback guardrails require
     safe termination.
-13. Noise-control finalization rule:
+14. Noise-control finalization rule:
     - Do not finalize on identity-link evidence alone.
     - Before `return_final`, ensure merged evidence includes at least one
       snippet aligned to the asked target attribute type.
-14. CoQ answer handoff rule:
+15. CoQ answer handoff rule:
     - When CoQ returns `is_sufficient=true`, do not answer with uncertainty
       language (for example "I don't know") unless you also cite an explicit
       contradiction in merged evidence.
     - Prefer answering with the CoQ `answer_candidate` when present.
-15. LLM-driven sufficiency decision:
+16. Stage-result return gate:
+    - Default `stage_confidence_threshold` is `0.9`.
+    - If top-level `is_sufficient=true` and confidence is
+      `>= stage_confidence_threshold`, return `stage_results` + `sub_queries` as
+      retrieval memory payload and avoid relying on raw episode return.
+    - If top-level is insufficient or below threshold, do not emit non-empty
+      stage-results; continue episode-driven behavior.
+17. LLM-driven sufficiency decision:
     - Top-level LLM owns the final sufficiency judgment using merged episodes,
       sub-skill summaries, and tool-call traces.
     - If still insufficient, identify missing evidence, form a new sub-query
@@ -217,6 +230,10 @@ Provide these fields whenever possible:
 - `reason_note`: short explanation
 - `related_episode_indices`: optional list of related evidence indices
 - `selected_episode_indices`: optional list of selected evidence indices
+- `stage_results`: optional list of stage-result objects with
+  `query`, `stage_result`, `confidence_score`, `reason_note`
+- `sub_queries`: optional list of generated sub-queries accumulated across
+  decomposition steps
 
 ## Completion
 
@@ -228,5 +245,8 @@ Complete when:
    actionable `new_query`), or
 3. Hop/branch budget is exhausted and runtime guardrails require safe
    completion/fallback.
+
+When sufficient with high confidence, prefer finalization payloads that include
+`stage_results` + `sub_queries`.
 
 Top-level must remain the final decision authority.

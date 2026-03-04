@@ -1,20 +1,20 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: Sufficiency-Aware Skill Verification
-current_phase: —
-current_phase_name: milestone complete
-current_plan: —
-status: completed
-stopped_at: v1.1 milestone archived
-last_updated: "2026-03-04T04:32:00.000Z"
+milestone: v1.2
+milestone_name: Stage-Result Return Optimization Loop
+current_phase: 16
+current_phase_name: stage-result return contracts and optimization loop
+current_plan: 16-02
+status: in_progress
+stopped_at: round-2 baseline promoted
+last_updated: "2026-03-04T23:10:00.000Z"
 last_activity: 2026-03-04
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
-  percent: 100
+  total_phases: 1
+  completed_phases: 0
+  total_plans: 2
+  completed_plans: 1
+  percent: 50
 ---
 
 # Project State
@@ -26,31 +26,36 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 **Core value:** Every query is handled by the right retrieval workflow, with
 reliable fallback to direct memory search when confidence is low or execution is
 unstable.
-**Current focus:** Planning next milestone.
+**Current focus:** Implement stage-result return logic and benchmark-gated
+optimization loop for v1.2.
 
 ## Current Position
 
-**Current Phase:** —
-**Current Phase Name:** milestone complete
-**Status:** v1.1 archived
+**Current Phase:** 16
+**Current Phase Name:** stage-result return contracts and optimization loop
+**Status:** executing benchmark-gated optimization loop
 **Last Activity:** 2026-03-04
-**Last Activity Description:** Archived v1.1 roadmap/requirements and captured
-benchmark gate artifacts.
-**Progress:** [██████████] 100%
+**Last Activity Description:** Kept Round 2 (`optv6_stage_result_r2`) with
+`llm_score=0.95`; baseline promoted and Round 3+ loop started.
+**Progress:** [█████-----] 50%
 
 ## Accumulated Context
 
 ### Decisions
 
-- Parent sufficiency is computed independently from child sufficiency outputs.
-- Runtime returns collected episodes; LLM emits filtering/sufficiency metadata
-  for metrics/debug/evaluation.
-- Split runs one live post-branch verification pass with optional rerun.
+- Parent/top-level sufficiency remains independently decided.
+- Stage-results are LLM-generated and confidence-gated; runtime should avoid
+  hard-coded semantic filters.
+- Benchmark gate policy for v1.2:
+  - baseline is currently `overall llm_score = 0.95`
+  - discard and redo if run `< baseline`
+  - commit and update baseline if run `>= baseline`
+  - continue until `llm_score >= 0.96`
 
 ### Open Concerns
 
-- Next milestone should include audit-first closure flow.
+- Need to confirm benchmark runtime stability for repeated 100q loop runs.
 
 ## Session Continuity
 
-**Resume with:** `$gsd-new-milestone`
+**Resume with:** `$gsd-execute-phase 16`

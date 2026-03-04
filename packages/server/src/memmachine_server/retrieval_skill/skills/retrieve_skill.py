@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -87,6 +89,16 @@ class RetrieveSkill(SkillToolBase):
         self._sub_skill_episode_line_cap = int(
             self._extra_params.get("sub_skill_episode_line_cap", 120)
         )
+        raw_stage_threshold = self._extra_params.get(
+            "stage_result_confidence_threshold",
+            0.9,
+        )
+        if isinstance(raw_stage_threshold, int | float) and not isinstance(
+            raw_stage_threshold, bool
+        ):
+            self._stage_result_confidence_threshold = float(raw_stage_threshold)
+        else:
+            self._stage_result_confidence_threshold = 0.9
         self._available_sub_skills = list(
             self._extra_params.get(
                 "available_sub_skills",
@@ -303,6 +315,113 @@ class RetrieveSkill(SkillToolBase):
             normalized.append(value)
         return normalized
 
+    @staticmethod
+    def _normalize_string_list(
+        raw: object,
+        *,
+        max_items: int = 32,
+        max_len: int = 400,
+    ) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            value = item.strip()
+            if not value:
+                continue
+            clipped = value[:max_len]
+            if clipped in seen:
+                continue
+            seen.add(clipped)
+            normalized.append(clipped)
+            if len(normalized) >= max_items:
+                break
+        return normalized
+
+    def _normalize_stage_results(self, raw: object) -> list[dict[str, object]]:
+        if not isinstance(raw, list):
+            return []
+        normalized: list[dict[str, object]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            raw_query = item.get("query")
+            raw_stage_result = item.get("stage_result")
+            if not isinstance(raw_query, str) or not isinstance(raw_stage_result, str):
+                continue
+            query_text = raw_query.strip()[:400]
+            stage_text = raw_stage_result.strip()[:1000]
+            if not query_text or not stage_text:
+                continue
+            key = (query_text, stage_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            record: dict[str, object] = {
+                "query": query_text,
+                "stage_result": stage_text,
+            }
+            raw_confidence = item.get("confidence_score")
+            if isinstance(raw_confidence, int | float) and not isinstance(
+                raw_confidence, bool
+            ):
+                confidence = max(0.0, min(1.0, float(raw_confidence)))
+                record["confidence_score"] = confidence
+            raw_reason_note = item.get("reason_note")
+            if isinstance(raw_reason_note, str) and raw_reason_note.strip():
+                record["reason_note"] = raw_reason_note.strip()[:500]
+            normalized.append(record)
+            if len(normalized) >= 32:
+                break
+        return normalized
+
+    @staticmethod
+    def _append_unique_strings(target: list[str], incoming: list[str]) -> None:
+        seen = set(target)
+        for value in incoming:
+            if value in seen:
+                continue
+            target.append(value)
+            seen.add(value)
+
+    @staticmethod
+    def _append_unique_stage_results(
+        target: list[dict[str, object]],
+        incoming: list[dict[str, object]],
+    ) -> None:
+        seen: set[tuple[str, str]] = set()
+        for item in target:
+            query = item.get("query")
+            stage_result = item.get("stage_result")
+            if isinstance(query, str) and isinstance(stage_result, str):
+                seen.add((query, stage_result))
+        for item in incoming:
+            query = item.get("query")
+            stage_result = item.get("stage_result")
+            if not isinstance(query, str) or not isinstance(stage_result, str):
+                continue
+            key = (query, stage_result)
+            if key in seen:
+                continue
+            target.append(item)
+            seen.add(key)
+
+    def _stage_result_gate_passes(
+        self,
+        *,
+        is_sufficient: bool,
+        confidence_score: float | None,
+    ) -> bool:
+        if not is_sufficient:
+            return False
+        if confidence_score is None:
+            return False
+        return confidence_score >= self._stage_result_confidence_threshold
+
     def _record_sub_skill_summary_metrics(
         self,
         *,
@@ -358,10 +477,12 @@ class RetrieveSkill(SkillToolBase):
             aggregated_metrics["evidence_sufficient"] = False
 
         confidence_score = summary_payload.get("confidence_score")
+        normalized_confidence: float | None = None
         if isinstance(confidence_score, int | float) and not isinstance(
             confidence_score, bool
         ):
             score = float(confidence_score)
+            normalized_confidence = score
             aggregated_metrics["latest_sufficiency_confidence_score"] = score
             if is_sufficient:
                 aggregated_metrics["sufficiency_confidence_score"] = score
@@ -377,8 +498,10 @@ class RetrieveSkill(SkillToolBase):
         if isinstance(reason_note, str) and reason_note.strip():
             aggregated_metrics["latest_sufficiency_reason_note"] = reason_note
         answer_candidate = summary_payload.get("answer_candidate")
+        normalized_answer_candidate: str | None = None
         if isinstance(answer_candidate, str) and answer_candidate.strip():
             candidate = answer_candidate.strip()
+            normalized_answer_candidate = candidate
             aggregated_metrics["latest_answer_candidate"] = candidate
             if is_sufficient:
                 aggregated_metrics["answer_candidate"] = candidate
@@ -409,6 +532,63 @@ class RetrieveSkill(SkillToolBase):
             if is_sufficient:
                 aggregated_metrics["selected_episode_indices"] = (
                     selected_episode_indices
+                )
+
+        normalized_skill_name = skill_name.strip().replace("-", "_").lower()
+        if normalized_skill_name == "coq":
+            stage_results = self._normalize_stage_results(
+                summary_payload.get("stage_results")
+            )
+            if (
+                not stage_results
+                and normalized_answer_candidate is not None
+                and isinstance(new_query, str)
+                and new_query.strip()
+                and self._stage_result_gate_passes(
+                    is_sufficient=is_sufficient,
+                    confidence_score=normalized_confidence,
+                )
+            ):
+                inferred_stage_result: dict[str, object] = {
+                    "query": new_query.strip(),
+                    "stage_result": normalized_answer_candidate,
+                }
+                if normalized_confidence is not None:
+                    inferred_stage_result["confidence_score"] = normalized_confidence
+                stage_results = [inferred_stage_result]
+
+            if stage_results:
+                aggregated_metrics["latest_stage_results"] = stage_results
+                if self._stage_result_gate_passes(
+                    is_sufficient=is_sufficient,
+                    confidence_score=normalized_confidence,
+                ):
+                    existing_stage_results = aggregated_metrics.get("stage_results")
+                    if not isinstance(existing_stage_results, list):
+                        existing_stage_results = []
+                        aggregated_metrics["stage_results"] = existing_stage_results
+                    self._append_unique_stage_results(
+                        existing_stage_results,
+                        stage_results,
+                    )
+
+        generated_sub_queries = self._normalize_string_list(
+            summary_payload.get("generated_sub_queries")
+            or summary_payload.get("sub_queries")
+        )
+        if generated_sub_queries:
+            aggregated_metrics["latest_stage_sub_queries"] = generated_sub_queries
+            if self._stage_result_gate_passes(
+                is_sufficient=is_sufficient,
+                confidence_score=normalized_confidence,
+            ):
+                existing_sub_queries = aggregated_metrics.get("stage_sub_queries")
+                if not isinstance(existing_sub_queries, list):
+                    existing_sub_queries = []
+                    aggregated_metrics["stage_sub_queries"] = existing_sub_queries
+                self._append_unique_strings(
+                    existing_sub_queries,
+                    generated_sub_queries,
                 )
 
         session.record_event(
@@ -454,6 +634,79 @@ class RetrieveSkill(SkillToolBase):
         if normalized == "split":
             return "SplitSkill"
         return "MemMachineSkill"
+
+    def _build_stage_result_memory_episodes(
+        self,
+        *,
+        query: QueryParam,
+        stage_results: list[dict[str, object]],
+        sub_queries: list[str],
+    ) -> list[Episode]:
+        if not stage_results and not sub_queries:
+            return []
+
+        created_at = datetime.now(tz=UTC)
+        session_key = query.memory.session_key
+        episodes: list[Episode] = []
+        for index, item in enumerate(stage_results, start=1):
+            stage_query = str(item.get("query") or "").strip()
+            stage_result = str(item.get("stage_result") or "").strip()
+            if not stage_query or not stage_result:
+                continue
+            confidence_text = ""
+            confidence_raw = item.get("confidence_score")
+            if isinstance(confidence_raw, int | float) and not isinstance(
+                confidence_raw, bool
+            ):
+                confidence_text = f" (confidence={float(confidence_raw):.2f})"
+            reason_text = ""
+            reason_note = item.get("reason_note")
+            if isinstance(reason_note, str) and reason_note.strip():
+                reason_text = f"\nReason: {reason_note.strip()}"
+            content = (
+                f"[StageResult {index}] Query: {stage_query}\n"
+                f"Answer: {stage_result}{confidence_text}{reason_text}"
+            )
+            uid_seed = f"stage:{stage_query}:{stage_result}:{index}"
+            uid = (
+                f"stage-{index}-"
+                f"{hashlib.sha1(uid_seed.encode('utf-8')).hexdigest()[:12]}"
+            )
+            episodes.append(
+                Episode(
+                    uid=uid,
+                    content=content,
+                    session_key=session_key,
+                    created_at=created_at,
+                    producer_id="retrieve-skill-stage-result",
+                    producer_role="assistant",
+                )
+            )
+
+        for index, sub_query in enumerate(sub_queries, start=1):
+            normalized_sub_query = sub_query.strip()
+            if not normalized_sub_query:
+                continue
+            content = f"[SubQuery {index}] {normalized_sub_query}"
+            uid_seed = f"subquery:{normalized_sub_query}:{index}"
+            uid = (
+                f"subquery-{index}-"
+                f"{hashlib.sha1(uid_seed.encode('utf-8')).hexdigest()[:12]}"
+            )
+            episodes.append(
+                Episode(
+                    uid=uid,
+                    content=content,
+                    session_key=session_key,
+                    created_at=created_at,
+                    producer_id="retrieve-skill-stage-result",
+                    producer_role="assistant",
+                )
+            )
+
+        if query.limit > 0:
+            return episodes[: query.limit]
+        return episodes
 
     async def _finalize_episodes(
         self,
@@ -883,10 +1136,46 @@ class RetrieveSkill(SkillToolBase):
                 selected_episode_indices = self._normalize_episode_indices(
                     action.selected_episode_indices
                 )
+                provided_stage_results = self._normalize_stage_results(
+                    action.stage_results
+                )
+                provided_sub_queries = self._normalize_string_list(action.sub_queries)
+                if provided_stage_results:
+                    aggregated_metrics["top_level_stage_results"] = (
+                        provided_stage_results
+                    )
+                if provided_sub_queries:
+                    aggregated_metrics["top_level_sub_queries"] = provided_sub_queries
+                gate_passes = self._stage_result_gate_passes(
+                    is_sufficient=top_level_is_sufficient,
+                    confidence_score=normalized_confidence,
+                )
+                if gate_passes and not provided_stage_results:
+                    inferred_stage_results = aggregated_metrics.get("stage_results")
+                    if isinstance(inferred_stage_results, list):
+                        normalized_inferred = self._normalize_stage_results(
+                            inferred_stage_results
+                        )
+                        if normalized_inferred:
+                            provided_stage_results = normalized_inferred
+                            aggregated_metrics["top_level_stage_results"] = (
+                                normalized_inferred
+                            )
+                if gate_passes and not provided_sub_queries:
+                    inferred_sub_queries = aggregated_metrics.get("stage_sub_queries")
+                    if isinstance(inferred_sub_queries, list):
+                        normalized_inferred_sub_queries = self._normalize_string_list(
+                            inferred_sub_queries
+                        )
+                        if normalized_inferred_sub_queries:
+                            provided_sub_queries = normalized_inferred_sub_queries
+                            aggregated_metrics["top_level_sub_queries"] = (
+                                normalized_inferred_sub_queries
+                            )
                 if (
                     top_level_is_sufficient
                     and normalized_confidence is not None
-                    and normalized_confidence >= 0.8
+                    and normalized_confidence >= self._stage_result_confidence_threshold
                     and not selected_episode_indices
                 ):
                     # Keep backward-compatible return-all behavior when no
@@ -913,6 +1202,15 @@ class RetrieveSkill(SkillToolBase):
                     aggregated_metrics["top_level_selected_episode_indices"] = (
                         selected_episode_indices
                     )
+                if provided_stage_results:
+                    aggregated_metrics["top_level_stage_results"] = (
+                        provided_stage_results
+                    )
+                if provided_sub_queries:
+                    aggregated_metrics["top_level_sub_queries"] = provided_sub_queries
+                aggregated_metrics["stage_result_confidence_threshold"] = (
+                    self._stage_result_confidence_threshold
+                )
 
                 return_arguments: dict[str, object] = {
                     "final_response": final_response,
@@ -933,6 +1231,10 @@ class RetrieveSkill(SkillToolBase):
                     return_arguments["selected_episode_indices"] = (
                         selected_episode_indices
                     )
+                if provided_stage_results:
+                    return_arguments["stage_results"] = provided_stage_results
+                if provided_sub_queries:
+                    return_arguments["sub_queries"] = provided_sub_queries
                 session.record_tool_call(
                     tool_name="return_final",
                     arguments=return_arguments,
@@ -946,6 +1248,8 @@ class RetrieveSkill(SkillToolBase):
                         "reason_note": action.reason_note,
                         "related_episode_indices": related_episode_indices,
                         "selected_episode_indices": selected_episode_indices,
+                        "stage_results": provided_stage_results,
+                        "sub_queries": provided_sub_queries,
                     },
                 )
                 session.record_event(
@@ -1067,10 +1371,42 @@ class RetrieveSkill(SkillToolBase):
             metrics["selected_skill_name"] = self._selected_skill_name_for_skill(
                 selected_skill
             )
-            final_episodes, rerank_applied = await self._finalize_episodes(
-                query=query,
-                episodes=session.merged_episodes,
+            top_level_confidence_raw = metrics.get("top_level_confidence_score")
+            top_level_confidence: float | None = None
+            if isinstance(top_level_confidence_raw, int | float) and not isinstance(
+                top_level_confidence_raw, bool
+            ):
+                top_level_confidence = float(top_level_confidence_raw)
+
+            top_level_stage_results = self._normalize_stage_results(
+                metrics.get("top_level_stage_results") or metrics.get("stage_results")
             )
+            top_level_sub_queries = self._normalize_string_list(
+                metrics.get("top_level_sub_queries") or metrics.get("stage_sub_queries")
+            )
+            stage_result_memory_episodes: list[Episode] = []
+            if self._stage_result_gate_passes(
+                is_sufficient=bool(metrics.get("top_level_is_sufficient", False)),
+                confidence_score=top_level_confidence,
+            ) and top_level_stage_results:
+                stage_result_memory_episodes = self._build_stage_result_memory_episodes(
+                    query=query,
+                    stage_results=top_level_stage_results,
+                    sub_queries=top_level_sub_queries,
+                )
+
+            if stage_result_memory_episodes:
+                final_episodes = stage_result_memory_episodes
+                rerank_applied = False
+                metrics["stage_result_memory_returned"] = True
+                metrics["returned_stage_result_count"] = len(top_level_stage_results)
+                metrics["returned_sub_query_count"] = len(top_level_sub_queries)
+            else:
+                final_episodes, rerank_applied = await self._finalize_episodes(
+                    query=query,
+                    episodes=session.merged_episodes,
+                )
+                metrics["stage_result_memory_returned"] = False
             metrics["rerank_applied"] = rerank_applied
             metrics["final_episode_count"] = len(final_episodes)
             metrics = self._augment_metrics_with_session_state(

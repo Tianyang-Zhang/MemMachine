@@ -26,7 +26,9 @@ SUB_SKILL_TOOL_NAMES = (
 class TopLevelToolAction(BaseModel):
     """Validated top-level tool action emitted by LLM tool calls."""
 
-    model_config = ConfigDict(extra="forbid")
+    # Allow extra fields so the runtime can ignore over-specified arguments
+    # instead of hard-failing into fallback.
+    model_config = ConfigDict(extra="ignore")
 
     action: Literal["spawn_sub_skill", "direct_memory_search", "return_final"]
     skill_name: str | None = None
@@ -40,6 +42,8 @@ class TopLevelToolAction(BaseModel):
     reason_note: str | None = None
     related_episode_indices: list[int] | None = None
     selected_episode_indices: list[int] | None = None
+    stage_results: list[dict[str, object]] | None = None
+    sub_queries: list[str] | None = None
 
 
 class SubSkillToolAction(BaseModel):
@@ -113,6 +117,24 @@ def top_level_tool_schemas(allowed_tools: list[str]) -> list[dict[str, object]]:
                         "selected_episode_indices": {
                             "type": "array",
                             "items": {"type": "integer"},
+                        },
+                        "stage_results": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {"type": "string"},
+                                    "stage_result": {"type": "string"},
+                                    "confidence_score": {"type": "number"},
+                                    "reason_note": {"type": "string"},
+                                },
+                                "required": ["query", "stage_result"],
+                                "additionalProperties": True,
+                            },
+                        },
+                        "sub_queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
                         },
                     },
                     "required": [],

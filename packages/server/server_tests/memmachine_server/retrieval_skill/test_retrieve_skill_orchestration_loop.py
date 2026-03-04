@@ -336,6 +336,115 @@ async def test_return_final_captures_top_level_sufficiency_fields(
 
 
 @pytest.mark.asyncio
+async def test_return_final_can_emit_stage_result_memory_payload(
+    query_policy: QueryPolicy,
+) -> None:
+    episode = _build_episode("ep-stage-raw", "raw retrieval evidence")
+    memory = FakeEpisodicMemory({"hello": [episode]})
+    model = ScriptedLanguageModel(
+        [
+            (
+                "policy text",
+                [
+                    {
+                        "function": {
+                            "name": "direct_memory_search",
+                            "arguments": {"query": "hello"},
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {
+                                "final_response": "finalized",
+                                "is_sufficient": True,
+                                "confidence_score": 0.92,
+                                "stage_results": [
+                                    {
+                                        "query": "Who discovered penicillin?",
+                                        "stage_result": "Alexander Fleming",
+                                        "confidence_score": 0.92,
+                                    }
+                                ],
+                                "sub_queries": [
+                                    "Who discovered penicillin?",
+                                    "What prize did he receive?",
+                                ],
+                            },
+                        }
+                    },
+                ],
+            )
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert len(episodes) == 3
+    assert all(item.producer_id == "retrieve-skill-stage-result" for item in episodes)
+    assert "StageResult" in episodes[0].content
+    assert "SubQuery 1" in episodes[1].content
+    assert "SubQuery 2" in episodes[2].content
+    assert metrics["stage_result_memory_returned"] is True
+    assert metrics["returned_stage_result_count"] == 1
+    assert metrics["returned_sub_query_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stage_result_memory_payload_requires_confidence_threshold(
+    query_policy: QueryPolicy,
+) -> None:
+    episode = _build_episode("ep-stage-low-confidence", "raw retrieval evidence")
+    memory = FakeEpisodicMemory({"hello": [episode]})
+    model = ScriptedLanguageModel(
+        [
+            (
+                "policy text",
+                [
+                    {
+                        "function": {
+                            "name": "direct_memory_search",
+                            "arguments": {"query": "hello"},
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {
+                                "final_response": "finalized",
+                                "is_sufficient": True,
+                                "confidence_score": 0.72,
+                                "stage_results": [
+                                    {
+                                        "query": "Who discovered penicillin?",
+                                        "stage_result": "Alexander Fleming",
+                                        "confidence_score": 0.72,
+                                    }
+                                ],
+                                "sub_queries": ["Who discovered penicillin?"],
+                            },
+                        }
+                    },
+                ],
+            )
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert [item.uid for item in episodes] == ["ep-stage-low-confidence"]
+    assert metrics["stage_result_memory_returned"] is False
+
+
+@pytest.mark.asyncio
 async def test_tool_protocol_invalid_action_triggers_fallback(
     query_policy: QueryPolicy,
 ) -> None:

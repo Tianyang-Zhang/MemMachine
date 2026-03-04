@@ -50,6 +50,11 @@ Maintain:
 - `all_retrieved_documents`: ordered list of all retrieved docs from every hop
 - `answer_candidate`: shortest explicit answer span currently supported by
   cumulative evidence (empty until sufficient)
+- `stage_results`: ordered stage-level answer records for hop queries already
+  resolved with high confidence
+- `generated_sub_queries`: ordered list of generated hop queries
+- `stage_confidence_threshold`: confidence gate for stage-result emission
+  (default `0.9`)
 - `related_episode_indices`: episodes related to answering the original query
 - `selected_episode_indices`: episodes selected by your own filtering judgment
 
@@ -81,6 +86,12 @@ For each iteration:
 6. Re-evaluate sufficiency on the full cumulative evidence.
 7. Extract/update `answer_candidate` only when the evidence explicitly states
    the asked target attribute/person/date/location/organization.
+8. When the current hop query is explicitly answered and confidence is above
+   `stage_confidence_threshold`, add one stage-result entry:
+   - `query`: current hop query
+   - `stage_result`: concise evidence-grounded answer for that hop
+   - `confidence_score`: hop-stage confidence
+   - `reason_note`: one-line grounding note
 
 Stop immediately when sufficient.
 
@@ -189,6 +200,9 @@ When `is_sufficient=true`:
 - set `new_query` to `original_query` exactly
 - return supporting `evidence_indices`
 - include `answer_candidate` as the canonical short answer string
+- add a final stage-result for `original_query` when confidence is
+  `>= stage_confidence_threshold`
+- include `generated_sub_queries` (all issued hop queries in order)
 - ensure `reason_note` states why the selected candidate is the best-supported
   target value when multiple related facts appear
 - `selected_episode_indices` is optional metadata only; include it when useful
@@ -209,8 +223,21 @@ When still insufficient:
 - identify `related_episode_indices` for useful intermediate evidence
 - `selected_episode_indices` remains optional metadata; runtime keeps
   return-all-up-to-limit behavior regardless of selection metadata.
+- for stage-level return safety: if final state is insufficient or final
+  confidence is below `stage_confidence_threshold`, return no `stage_results`
+  (omit key or use empty list).
 
-### 10. Confidence calibration
+### 10. Stage-result confidence gate
+
+- Default `stage_confidence_threshold` is `0.9`.
+- Emit stage-results only when:
+  - the represented stage query is explicitly answerable from retrieved
+    evidence,
+  - confidence for that stage is `>= stage_confidence_threshold`.
+- If final return state is insufficient or low-confidence, output episode-style
+  summary metadata only (no stage-results).
+
+### 11. Confidence calibration
 
 `confidence_score` reflects confidence in sufficiency judgment only.
 
@@ -222,7 +249,7 @@ Use these anchors:
 
 If choosing insufficient due to uncertainty, keep confidence below `0.70`.
 
-### 11. Edge-case handling
+### 12. Edge-case handling
 
 - empty/no-relevance evidence -> insufficient, `evidence_indices=[]`, produce the
   most targeted grounded rewrite from original query
@@ -255,6 +282,10 @@ Structured completion (required for all endings):
 - `used_queries`: array of strings
 - `answer_candidate`: short string (required to be non-empty when
   `is_sufficient=true`)
+- `stage_results`: array of objects with
+  `query`, `stage_result`, `confidence_score`, `reason_note`
+- `generated_sub_queries`: array of strings (all hop queries emitted by CoQ)
+- `stage_confidence_threshold`: number in `[0.0, 1.0]` (default `0.9`)
 - `related_episode_indices`: array of integer indices (0-based)
 - `selected_episode_indices`: array of integer indices (0-based)
 
@@ -264,6 +295,8 @@ Fail-closed requirements:
 - when insufficient and uncertain, keep `is_sufficient=false`
 - when sufficient, `new_query` must equal `original_query` exactly
 - when sufficient, `answer_candidate` must be present and non-empty
+- when final return is insufficient or below threshold, do not emit
+  non-empty `stage_results`
 - `selected_episode_indices` must be subset of known retrieved evidence indices
 
 ## Examples
@@ -277,7 +310,7 @@ Input (conceptual):
   - doc 3: Alexander Fleming received the Nobel Prize in Physiology or Medicine
 
 Output summary JSON:
-`{"is_sufficient":true,"evidence_indices":[0,3],"new_query":"What prize did the discoverer of penicillin receive?","confidence_score":0.95,"reason_code":"sufficient_cumulative_evidence","reason_note":"discoverer identity and prize evidence both present"}`
+`{"is_sufficient":true,"evidence_indices":[0,3],"new_query":"What prize did the discoverer of penicillin receive?","confidence_score":0.95,"reason_code":"sufficient_cumulative_evidence","reason_note":"discoverer identity and prize evidence both present","stage_results":[{"query":"Who discovered penicillin?","stage_result":"Alexander Fleming","confidence_score":0.93},{"query":"What prize did the discoverer of penicillin receive?","stage_result":"Nobel Prize in Physiology or Medicine","confidence_score":0.95}],"generated_sub_queries":["Who discovered penicillin?","What prize did the discoverer of penicillin receive?"],"stage_confidence_threshold":0.9}`
 
 ### Example 2: insufficient missing first dependency hop
 
