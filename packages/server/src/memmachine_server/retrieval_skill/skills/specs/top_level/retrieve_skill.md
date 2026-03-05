@@ -101,6 +101,11 @@ Stop immediately when sufficient.
 Never skip the earliest blocking hop. If final asked attribute is unresolved,
 next query must target that unresolved dependency chain, not a side fact.
 
+Step budget guardrail:
+- Keep total `memmachine_search` calls <= 6.
+- If unresolved near budget end, finalize with best-supported answer/proxy
+  rather than drifting into repetitive rewrites that risk max-step fallback.
+
 Before finalizing, verify final-hop coverage:
 - At least one issued query must target the final asked attribute.
 - Do not finalize on identity-link evidence alone if final asked attribute is
@@ -203,6 +208,23 @@ Answer-type guardrails:
 
 If uncertain, keep `is_sufficient=false`.
 
+Controlled best-supported fallback (last resort, low confidence):
+- If exact asked attribute is missing after grounded attempts, but one dominant
+  proxy value is explicitly supported for the resolved entity and no competing
+  proxy is equally strong, you may finalize with that proxy value.
+- Mark this with lower confidence (`<=0.69`) and explicit reason note that this
+  is a best-supported proxy.
+- Proxy priority examples:
+  - location questions (`birthplace`, `place of death`, `where`): strongest
+    explicit location tied to the resolved entity in canonical bio context.
+  - workplace questions: explicit organization affiliation, including
+    publication/institution roles (for example wrote for, served at, president
+    of, commissioner of).
+  - country/nationality questions: explicit nationality/citizenship/demonym
+    tied to the resolved-name entity when direct country wording is absent.
+
+Do not use proxy fallback when multiple competing values remain unresolved.
+
 ### 9. Sufficient and insufficient behavior
 
 When sufficient:
@@ -217,6 +239,7 @@ Sufficient response constraints:
 - do not ask clarifying questions,
 - do not answer with "I don't know",
 - avoid multi-candidate hedging unless query explicitly asks for multiple values.
+- for yes/no questions, output exactly `yes` or `no` first before explanation.
 
 When insufficient:
 - continue with a novel next query until hop budget is exhausted,
