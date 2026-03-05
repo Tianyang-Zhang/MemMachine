@@ -176,15 +176,21 @@ class ToolSelectAgent(AgentToolBase):
             return self._default_tool, input_token, output_token
         return selected_tool, input_token, output_token
 
+    async def select_tool(
+        self,
+        policy: QueryPolicy,
+        query: QueryParam,
+    ) -> tuple[AgentToolBase | None, int, int]:
+        """Select the best child tool for a query without executing it."""
+        return await self._select_tool_by_model(policy, query)
+
     async def do_query(
         self,
         policy: QueryPolicy,
         query: QueryParam,
     ) -> tuple[list[Episode], dict[str, Any]]:
         logger.info("CALLING %s with query: %s", self.agent_name, query.query)
-        tool, input_token, output_token = await self._select_tool_by_model(
-            policy, query
-        )
+        tool, input_token, output_token = await self.select_tool(policy, query)
         if tool is None:
             if self._default_tool is not None:
                 tool = self._default_tool

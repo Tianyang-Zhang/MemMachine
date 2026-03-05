@@ -1,9 +1,11 @@
 """Chain-of-query agent for iterative retrieval sufficiency checking."""
 
 import asyncio
+import datetime
 import json
 import logging
 import time
+import uuid
 from collections.abc import Iterable
 from typing import Any, cast
 
@@ -24,104 +26,72 @@ logger = logging.getLogger(__name__)
 # Reinforcement Learning", arXiv:2508.03680.
 COMBINED_SUFFICIENCY_AND_REWRITE_PROMPT = """You are a meticulous expert in retrieval-augmented question answering evaluation and query rewriting.
 
-Task: Given (1) an original user query, (2) rewritten queries already tried, and (3) retrieved documents, you must decide whether the documents are sufficient to answer the orig
-inal query directly, completely, and explicitly. If insufficient, generate the NEXT BEST rewritten subquery to retrieve the missing evidence. If sufficient, set the rewritten qu
-ery to the original query.
+Task: progress multi-hop retrieval in one LLM turn.
+Given the original query, current query, prior sub-queries, prior stage-results,
+and retrieved documents, you must:
+1) Decompose remaining hops.
+2) Resolve every hop that can be answered from the current retrieved documents.
+3) Emit exactly ONE latest unresolved subquery to search next (if any).
 
 Hard constraints:
-- Use ONLY the provided retrieved documents for sufficiency judgment. Do NOT use external knowledge, browsing, assumptions, or plausibility.
-- Do NOT invent new entities. Only use entity names/terms present in the retrieved documents and/or original query.
-- Output ONLY a valid JSON object with EXACTLY these keys and no others:
+- Use ONLY provided retrieved documents. No external knowledge.
+- Do NOT invent entities not present in original query or retrieved docs.
+- Output ONLY a valid JSON object with EXACTLY these keys:
   - "is_sufficient" (boolean)
-  - "evidence_indices" (list of 0-based integers)
+  - "evidence_indices" (list[int], 0-based over Retrieved Documents)
   - "new_query" (string, single-line)
   - "confidence_score" (number 0..1)
+  - "stage_results" (list[object])
+  - "generated_sub_queries" (list[string])
 
-Inputs (schemas):
-- Original Query: a string.
-- Rewritten Queries Tried: {used_query}
-  - May be: (a) an array/list of strings, (b) a newline-separated string, or (c) empty/null.
-  - Treat it as the full set of prior attempted rewritten queries.
-- Retrieved Documents: {retrieved_episodes}
-  - Must be treated as an ordered list/array of documents.
-  - Each document may be a string or an object; regardless, assume each has textual content you can read.
-  - evidence_indices refer to this list order (0-based).
-  - If empty/null/unreadable: treat as no evidence.
+Meaning of fields:
+- stage_results: newly solved hops from THIS turn.
+  Each item must have EXACTLY keys:
+  - "query" (string)
+  - "stage_result" (string)
+  - "confidence_score" (number 0..1)
+- generated_sub_queries: sub-queries considered/generated THIS turn in order.
+- new_query: the latest unresolved subquery requiring another memory search.
+  If no unresolved subquery remains, set new_query = original query exactly.
 
-Decision procedure (mechanism-first):
-1) Normalize inputs (internal):
-- Parse used_query into a list of strings if needed; if empty/null, use [].
-- Treat retrieved_episodes as a list; if empty/null, use [].
+Required workflow:
+1) Build/continue ordered hop plan for Original Query using Existing Stage Results.
+2) Generate missing hop sub-queries in order (entity-resolution hops included).
+3) For each generated hop query, check whether current retrieved docs already answer it.
+   - If yes: add to stage_results.
+   - If no: keep unresolved.
+4) Choose new_query:
+   - unresolved exists -> pick the latest unresolved one.
+   - none unresolved -> new_query = original query.
+5) Set is_sufficient = true ONLY if Original Query is fully answerable from
+   (Existing Stage Results + stage_results + Retrieved Documents).
+   Otherwise false.
+6) If uncertain, set is_sufficient = false.
 
-2) Decompose the Original Query (internal):
-Identify ALL required informational components needed to answer every part of the query:
-- Key entities (people/organizations/places/products)
-- Required attributes (names/dates/locations/numbers/definitions/specs)
-- Required relationships / multi-hop chains (each hop/link)
-- Constraints (time range, "latest", comparisons, "list all", counts, completeness scope)
+Quality requirements:
+- Prefer earliest missing hop first, but new_query must be latest unresolved hop.
+- Avoid duplicate sub-queries against Rewritten Queries Tried and Existing Sub Queries.
+- stage_result must be concise and directly answer its query.
+- evidence_indices should include all docs that contribute to solved hops/original sufficiency.
 
-3) Evidence scan and relevance:
-- A document is "relevant" ONLY if it explicitly contains at least one required fact OR explicitly establishes an intermediate link in a required multi-hop chain.
-- Collect evidence_indices as the set of all relevant documents that contribute required facts/links.
-- If no document contributes any required fact/link, evidence_indices must be [].
-
-4) Sufficiency standard (strict):
-Set is_sufficient = true ONLY if:
-- The retrieved documents explicitly contain all facts needed to answer every component of the original query, AND
-- Any required multi-hop chain has EVERY link explicitly supported in the documents, AND
-- Any requirement for exact details (names/dates/locations/numbers/specs) is explicitly present, AND
-- Any "how many / list all / compare / full coverage" requirement is satisfiable from documents that clearly cover the complete scope.
-Otherwise set is_sufficient = false.
-If uncertain at any point, choose is_sufficient = false.
-
-NEXT BEST query objective (only when is_sufficient=false):
-Generate ONE single-line new_query that maximizes the chance of retrieving the missing evidence, using this ranking priority:
-1) Earliest blocking hop: Target the first missing link that prevents completion of the query's required chain(s).
-2) Specificity: Use the most specific entity names and relation terms available from the retrieved documents (and original query) to reduce ambiguity.
-3) Minimality: Ask for exactly the missing fact/link (not the whole original question).
-4) Novelty vs tried queries: Avoid repeating prior rewritten queries.
-
-Missing-evidence identification (internal only; do NOT output):
-- Determine the minimal missing fact(s) that, if retrieved, would allow answering using (retrieved documents + missing evidence).
-- Prefer missing evidence framed as a single subject-focused fact (e.g., "X's manager", "Y's birthplace", "Z battery capacity").
-
-Rewritten query generation rules:
-- If is_sufficient = true:
-  - new_query MUST equal the original query exactly.
-- If is_sufficient = false:
-  - new_query MUST be a single-line question/phrase that targets the missing evidence per the NEXT BEST objective.
-  - Must not introduce new entities not present in retrieved documents/original query.
-  - Must avoid duplication of previously tried queries:
-    - Normalize by lowercasing and collapsing internal whitespace.
-    - If used_query contains multiple items, compare against all of them.
-    - If the best candidate matches a tried query after normalization, rephrase with the same intent (synonyms/reordering) while staying equally specific.
-  - If you cannot produce a better query than what was tried (or no grounded entities exist to target), set new_query to the original query exactly.
-
-Confidence score calibration:
-- confidence_score reflects certainty in your is_sufficient decision (not answer correctness).
-- Use these anchors:
-  - 0.90-1.00: Very clear sufficiency/insufficiency with explicit supporting/absent facts.
-  - 0.60-0.89: Moderate clarity; some ambiguity but decision is still well-supported.
-  - 0.30-0.59: Low clarity; documents are noisy/partial; you still must err insufficient.
-  - 0.00-0.29: Extremely unclear; empty/unreadable docs or severe mismatch.
-- If you chose is_sufficient=false due to uncertainty, keep confidence_score below 0.70.
-
-Edge cases:
-- If retrieved_episodes is empty or contains no relevant facts: is_sufficient=false, evidence_indices=[], and produce the most targeted new_query you can grounded in the origina
-l query (without inventing new entities).
-- If the original query is underspecified/ambiguous and documents do not resolve it explicitly: is_sufficient=false.
-
-Now perform the task using:
+Inputs:
 **Original Query**
 {original_query}
+
+**Current Query/Subquery**
+{current_query}
 
 **Rewritten Queries Tried**
 {used_query}
 
+**Existing Sub Queries**
+{known_sub_queries}
+
+**Existing Stage Results**
+{existing_stage_results}
+
 **Retrieved Documents**
 {retrieved_episodes}
-
-Output the JSON object only.
 """
 
 
@@ -138,6 +108,9 @@ class ChainOfQueryAgent(AgentToolBase):
         )
         self._max_attempts: int = extra_params.get("max_attempts", 3)
         self._confidence_score: float = extra_params.get("confidence_score", 0.8)
+        self._stage_result_output_confidence: float = extra_params.get(
+            "stage_result_output_confidence", 0.8
+        )
         if self._model is None:
             raise ValueError("Model is not set")
 
@@ -183,23 +156,140 @@ class ChainOfQueryAgent(AgentToolBase):
     def _init_perf_metrics(self) -> dict[str, Any]:
         return {
             "queries": [],
+            "sub_queries": [],
+            "generated_sub_queries": [],
             "is_sufficient": [],
             "evidence": [],
             "confidence_scores": [],
+            "stage_results": [],
             "memory_retrieval_time": 0.0,
             "memory_search_called": 0,
             "llm_time": 0.0,
             "input_token": 0,
             "output_token": 0,
+            "stage_result_memory_returned": False,
+            "returned_stage_result_count": 0,
             "agent": self.agent_name,
         }
 
-    async def combined_check_and_rewrite(
+    def _normalize_query(self, query: str) -> str:
+        return " ".join(query.strip().lower().split())
+
+    def _append_unique_sub_query(self, target: list[str], query: str) -> None:
+        query_text = query.strip()
+        if query_text == "":
+            return
+        query_norm = self._normalize_query(query_text)
+        for existing in target:
+            if self._normalize_query(existing) == query_norm:
+                return
+        target.append(query_text)
+
+    def _append_unique_stage_result(
+        self,
+        target: list[dict[str, Any]],
+        stage_result: dict[str, Any],
+    ) -> None:
+        query_text = str(stage_result.get("query", "")).strip()
+        answer_text = str(stage_result.get("stage_result", "")).strip()
+        if query_text == "" or answer_text == "":
+            return
+
+        query_norm = self._normalize_query(query_text)
+        answer_norm = self._normalize_query(answer_text)
+        for existing in target:
+            if (
+                self._normalize_query(str(existing.get("query", ""))) == query_norm
+                and self._normalize_query(str(existing.get("stage_result", "")))
+                == answer_norm
+            ):
+                return
+
+        confidence = stage_result.get("confidence_score", 0.0)
+        if not isinstance(confidence, int | float):
+            confidence = 0.0
+        target.append(
+            {
+                "query": query_text,
+                "stage_result": answer_text,
+                "confidence_score": float(confidence),
+            }
+        )
+
+    def _build_stage_result_episodes(
         self,
         query: QueryParam,
+        stage_results: list[dict[str, Any]],
+        sub_queries: list[str],
+    ) -> list[Episode]:
+        if len(stage_results) == 0:
+            return []
+
+        now = datetime.datetime.now(tz=datetime.UTC)
+        episodes: list[Episode] = []
+        for idx, stage_item in enumerate(stage_results, start=1):
+            stage_query = str(stage_item.get("query", "")).strip()
+            stage_result = str(stage_item.get("stage_result", "")).strip()
+            confidence = stage_item.get("confidence_score", 0.0)
+            confidence_str = (
+                f"{float(confidence):.2f}"
+                if isinstance(confidence, int | float)
+                else "0.00"
+            )
+            if stage_query == "" or stage_result == "":
+                continue
+            episodes.append(
+                Episode(
+                    uid=f"retrieval-agent-stage-result-{uuid.uuid4()}",
+                    content=(
+                        f"[StageResult {idx}] Query: {stage_query}\n"
+                        f"Answer: {stage_result} (confidence={confidence_str})"
+                    ),
+                    session_key=query.memory.session_key,
+                    created_at=now + datetime.timedelta(seconds=len(episodes)),
+                    producer_id="retrieval-agent-stage-result",
+                    producer_role="assistant",
+                )
+            )
+
+        for idx, sub_query in enumerate(sub_queries, start=1):
+            query_text = str(sub_query).strip()
+            if query_text == "":
+                continue
+            episodes.append(
+                Episode(
+                    uid=f"retrieval-agent-sub-query-{uuid.uuid4()}",
+                    content=f"[SubQuery {idx}] {query_text}",
+                    session_key=query.memory.session_key,
+                    created_at=now + datetime.timedelta(seconds=len(episodes)),
+                    producer_id="retrieval-agent-stage-result",
+                    producer_role="assistant",
+                )
+            )
+        return episodes
+
+    def _filter_stage_results_for_output(
+        self, stage_results: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        filtered: list[dict[str, Any]] = []
+        for stage_item in stage_results:
+            confidence = stage_item.get("confidence_score", 0.0)
+            if not isinstance(confidence, int | float):
+                continue
+            if float(confidence) <= self._stage_result_output_confidence:
+                continue
+            filtered.append(stage_item)
+        return filtered
+
+    async def combined_check_and_rewrite(  # noqa: C901
+        self,
+        query: QueryParam,
+        current_query: str,
         retrieved_episodes: Iterable[Episode],
         retrived_evidence: Iterable[Episode],
         used_queries: list[str],
+        known_sub_queries: list[str],
+        existing_stage_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
         context: str = ""
         evidence = set(retrived_evidence)
@@ -210,9 +300,16 @@ class ChainOfQueryAgent(AgentToolBase):
         for idx, episode in enumerate(episodes):
             context += f"[{idx}] {episodes_to_string([episode])}"
         used_query_str = "\n".join(used_queries)
+        known_sub_queries_str = "\n".join(known_sub_queries)
+        existing_stage_results_str = json.dumps(
+            existing_stage_results, ensure_ascii=False
+        )
         prompt = self._combined_prompt.format(
             original_query=query.query,
+            current_query=current_query,
             used_query=used_query_str,
+            known_sub_queries=known_sub_queries_str,
+            existing_stage_results=existing_stage_results_str,
             retrieved_episodes=context,
         )
         m = cast(LanguageModel, self._model)
@@ -250,11 +347,68 @@ class ChainOfQueryAgent(AgentToolBase):
         final_episodes = sorted(
             final_episodes, key=lambda e: (e.created_at is None, e.created_at)
         )
+
+        parsed_stage_results: list[dict[str, Any]] = []
+        for stage_item in response.get("stage_results", []):
+            if not isinstance(stage_item, dict):
+                continue
+            query_text = str(stage_item.get("query", "")).strip()
+            stage_text = str(stage_item.get("stage_result", "")).strip()
+            if query_text == "" or stage_text == "":
+                continue
+            confidence_val = stage_item.get("confidence_score", 0.0)
+            if not isinstance(confidence_val, int | float):
+                confidence_val = 0.0
+            parsed_stage_results.append(
+                {
+                    "query": query_text,
+                    "stage_result": stage_text,
+                    "confidence_score": float(confidence_val),
+                }
+            )
+
+        parsed_generated_sub_queries: list[str] = []
+        for sub_query in response.get("generated_sub_queries", []):
+            if not isinstance(sub_query, str):
+                continue
+            query_text = sub_query.strip()
+            if query_text == "":
+                continue
+            parsed_generated_sub_queries.append(query_text)
+
+        legacy_stage_result = str(response.get("stage_result", "")).strip()
+        if legacy_stage_result != "":
+            parsed_stage_results.append(
+                {
+                    "query": current_query,
+                    "stage_result": legacy_stage_result,
+                    "confidence_score": float(response.get("confidence_score", 0.0)),
+                }
+            )
+
+        response_new_query = str(response.get("new_query", query.query)).strip()
+        if response_new_query == "":
+            response_new_query = query.query
+
+        answered_query_norms = {
+            self._normalize_query(str(stage_item.get("query", "")))
+            for stage_item in parsed_stage_results
+        }
+        unresolved_from_generated = [
+            sub_query
+            for sub_query in parsed_generated_sub_queries
+            if self._normalize_query(sub_query) not in answered_query_norms
+        ]
+        if len(unresolved_from_generated) > 0:
+            response_new_query = unresolved_from_generated[-1]
+
         return {
             "is_sufficient": response.get("is_sufficient", False),
             "evidence": evidence,
-            "new_query": response.get("new_query", query.query),
+            "new_query": response_new_query,
             "confidence_score": response.get("confidence_score", 0.0),
+            "stage_results": parsed_stage_results,
+            "generated_sub_queries": parsed_generated_sub_queries,
             "episodes": final_episodes,
             "input_token": input_token,
             "output_token": output_token,
@@ -289,7 +443,7 @@ class ChainOfQueryAgent(AgentToolBase):
                     raise
         return result, metrics
 
-    async def do_query(
+    async def do_query(  # noqa: C901
         self,
         policy: QueryPolicy,
         query: QueryParam,
@@ -302,19 +456,32 @@ class ChainOfQueryAgent(AgentToolBase):
             "evidence": set(),
             "new_query": query.query,
             "confidence_score": 0.0,
+            "stage_results": [],
+            "generated_sub_queries": [],
             "episodes": [],
             "input_token": 0,
             "output_token": 0,
         }
         used_query: list[str] = []
+        all_sub_queries: list[str] = []
+        all_stage_results: list[dict[str, Any]] = []
 
         curr_query = query.model_copy()
         for _ in range(self._max_attempts):
-            curr_query.query = sufficiency_response.get("new_query", query.query)
-            if curr_query.query in used_query or curr_query.query == "":
+            curr_query.query = str(
+                sufficiency_response.get("new_query", query.query)
+            ).strip()
+            curr_query_norm = self._normalize_query(curr_query.query)
+            if curr_query_norm == "":
+                break
+            if any(
+                self._normalize_query(searched_q) == curr_query_norm
+                for searched_q in used_query
+            ):
                 # print("The model did not rewrite the query")
                 break
             used_query.append(curr_query.query)
+            self._append_unique_sub_query(all_sub_queries, curr_query.query)
             # Step 1: Perform the query
             result, p_metrics = await self._do_default_query(policy, curr_query)
             self._update_perf_metrics(p_metrics, perf_metrics)
@@ -323,9 +490,12 @@ class ChainOfQueryAgent(AgentToolBase):
             llm_start = time.time()
             sufficiency_response = await self.combined_check_and_rewrite(
                 query,
+                curr_query.query,
                 result,
                 retrieved_evidence,
                 used_query,
+                all_sub_queries,
+                all_stage_results,
             )
             perf_metrics["llm_time"] += time.time() - llm_start
             retrieved_evidence.update(sufficiency_response["evidence"])
@@ -338,6 +508,29 @@ class ChainOfQueryAgent(AgentToolBase):
             perf_metrics["confidence_scores"].append(
                 sufficiency_response["confidence_score"]
             )
+
+            prior_stage_count = len(all_stage_results)
+            for stage_item in sufficiency_response.get("stage_results", []):
+                if not isinstance(stage_item, dict):
+                    continue
+                self._append_unique_stage_result(all_stage_results, stage_item)
+            if len(all_stage_results) > prior_stage_count:
+                perf_metrics["stage_results"].extend(
+                    all_stage_results[prior_stage_count:]
+                )
+
+            prior_sub_query_count = len(all_sub_queries)
+            for generated_sub_query in sufficiency_response.get(
+                "generated_sub_queries", []
+            ):
+                if not isinstance(generated_sub_query, str):
+                    continue
+                self._append_unique_sub_query(all_sub_queries, generated_sub_query)
+            if len(all_sub_queries) > prior_sub_query_count:
+                perf_metrics["generated_sub_queries"].extend(
+                    all_sub_queries[prior_sub_query_count:]
+                )
+
             perf_metrics["input_token"] += sufficiency_response["input_token"]
             perf_metrics["output_token"] += sufficiency_response["output_token"]
             if (
@@ -350,8 +543,42 @@ class ChainOfQueryAgent(AgentToolBase):
                 # print(f"Enough evidence with rewrites: {used_query}")
                 break
 
+        perf_metrics["sub_queries"] = list(all_sub_queries)
+        perf_metrics["stage_results"] = list(all_stage_results)
+        output_stage_results = self._filter_stage_results_for_output(all_stage_results)
+        output_sub_queries: list[str] = []
+        for stage_item in output_stage_results:
+            self._append_unique_sub_query(output_sub_queries, str(stage_item["query"]))
+        stage_result_episodes = self._build_stage_result_episodes(
+            query=query,
+            stage_results=output_stage_results,
+            sub_queries=output_sub_queries,
+        )
+
+        if (
+            sufficiency_response["is_sufficient"]
+            and sufficiency_response["confidence_score"] >= self._confidence_score
+            and len(stage_result_episodes) > 0
+        ):
+            perf_metrics["stage_result_memory_returned"] = True
+            perf_metrics["returned_stage_result_count"] = len(stage_result_episodes)
+            return stage_result_episodes, perf_metrics
+
         # Rerank base on all queries used
         q = query.model_copy()
         q.query = query.query + "\n".join(used_query)
         final_episodes = await self._do_rerank(q, sufficiency_response["episodes"])
+
+        if len(stage_result_episodes) > 0:
+            perf_metrics["stage_result_memory_returned"] = True
+            perf_metrics["returned_stage_result_count"] = len(stage_result_episodes)
+            merged_episodes: list[Episode] = []
+            seen_uids: set[str] = set()
+            for episode in [*stage_result_episodes, *final_episodes]:
+                if episode.uid in seen_uids:
+                    continue
+                seen_uids.add(episode.uid)
+                merged_episodes.append(episode)
+            return merged_episodes, perf_metrics
+
         return final_episodes, perf_metrics

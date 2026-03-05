@@ -359,25 +359,34 @@ async def init_agent(
     if agent_name == memory_agent.agent_name:
         return memory_agent
 
-    param: AgentToolBaseParam = AgentToolBaseParam(
+    coq_param: AgentToolBaseParam = AgentToolBaseParam(
         model=model, children_tools=[memory_agent], extra_params={}, reranker=reranker
     )
 
-    coq_agent: ChainOfQueryAgent = ChainOfQueryAgent(param)
-    split_agent: SplitQueryAgent = SplitQueryAgent(param)
+    coq_agent: ChainOfQueryAgent = ChainOfQueryAgent(coq_param)
+    split_param: AgentToolBaseParam = AgentToolBaseParam(
+        model=model,
+        children_tools=[memory_agent, coq_agent],
+        extra_params={},
+        reranker=reranker,
+    )
+    split_agent: SplitQueryAgent = SplitQueryAgent(split_param)
+
+    select_param: AgentToolBaseParam = AgentToolBaseParam(
+        model=model,
+        children_tools=[split_agent, coq_agent, memory_agent],
+        extra_params={"default_tool_name": coq_agent.agent_name},
+        reranker=reranker,
+    )
+    select_agent: ToolSelectAgent = ToolSelectAgent(select_param)
+    split_agent.set_tool_selector(select_agent)
 
     if agent_name == coq_agent.agent_name:
         return coq_agent
     if agent_name == split_agent.agent_name:
         return split_agent
-
-    param: AgentToolBaseParam = AgentToolBaseParam(
-        model=model,
-        children_tools=[split_agent, coq_agent, memory_agent],
-        extra_params={"default_tool_name": coq_agent.agent_name},
-    )
-
-    select_agent: ToolSelectAgent = ToolSelectAgent(param)
+    if agent_name == select_agent.agent_name:
+        return select_agent
 
     return select_agent
 

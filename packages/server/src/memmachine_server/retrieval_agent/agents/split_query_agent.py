@@ -129,10 +129,55 @@ class SplitQueryAgent(AgentToolBase):
         super().__init__(param)
         if self._model is None:
             raise ValueError("Model is not set")
-        self._prompt = (param.extra_params or {}).get(
+        extra_params = param.extra_params or {}
+        self._prompt = extra_params.get(
             "split_prompt",
             SPLIT_QUERY_PROMPT,
         )
+        self._memory_agent: AgentToolBase | None = None
+        self._coq_agent: AgentToolBase | None = None
+        self._tool_selector: AgentToolBase | None = cast(
+            AgentToolBase | None, extra_params.get("tool_selector")
+        )
+        for tool in self._children_tools:
+            if tool.agent_name == "MemMachineAgent":
+                self._memory_agent = tool
+            elif tool.agent_name == "ChainOfQueryAgent":
+                self._coq_agent = tool
+            elif tool.agent_name == "ToolSelectAgent" and self._tool_selector is None:
+                self._tool_selector = tool
+        if self._memory_agent is None:
+            raise ValueError("SplitQueryAgent requires MemMachineAgent as a child tool")
+
+    def set_tool_selector(self, selector: AgentToolBase | None) -> None:
+        """Inject the selector used to route each generated sub-query."""
+        self._tool_selector = selector
+
+    async def _route_sub_query(
+        self,
+        policy: QueryPolicy,
+        query: QueryParam,
+    ) -> tuple[AgentToolBase, int, int]:
+        assert self._memory_agent is not None
+        if self._tool_selector is None:
+            return self._memory_agent, 0, 0
+
+        select_tool_fn = getattr(self._tool_selector, "select_tool", None)
+        if select_tool_fn is None:
+            logger.warning(
+                "SplitQueryAgent received a selector without `select_tool`; "
+                "falling back to MemMachineAgent."
+            )
+            return self._memory_agent, 0, 0
+
+        selected_tool, input_token, output_token = await select_tool_fn(policy, query)
+        if (
+            selected_tool is not None
+            and self._coq_agent is not None
+            and selected_tool.agent_name == self._coq_agent.agent_name
+        ):
+            return self._coq_agent, input_token, output_token
+        return self._memory_agent, input_token, output_token
 
     @property
     def agent_name(self) -> str:
@@ -164,6 +209,9 @@ class SplitQueryAgent(AgentToolBase):
         logger.info("CALLING %s with query: %s", self.agent_name, query.query)
         perf_metrics: dict[str, Any] = {
             "queries": [],
+            "subquery_selected_tools": [],
+            "subquery_tool_select_input_token": 0,
+            "subquery_tool_select_output_token": 0,
             "llm_time": 0.0,
             "agent": self.agent_name,
         }
@@ -187,15 +235,18 @@ class SplitQueryAgent(AgentToolBase):
             perf_metrics["queries"].append(sub_query)
             param = query.model_copy()
             param.query = sub_query
-            # TODO: make this self-adaptive
-            # param.limit /= 2
-            tasks.append(super().do_query(policy, param))
+            tasks.append(self._run_single_sub_query(policy, param))
         results = await asyncio.gather(*tasks)
-        for res, perf in results:
+        for sub_query, res, perf, selected_tool_name, input_tok, output_tok in results:
             if res is None:
                 continue
             result.extend(res)
             perf_metrics = self._update_perf_metrics(perf, perf_metrics)
+            perf_metrics["subquery_selected_tools"].append(
+                {"query": sub_query, "selected_tool": selected_tool_name}
+            )
+            perf_metrics["subquery_tool_select_input_token"] += input_tok
+            perf_metrics["subquery_tool_select_output_token"] += output_tok
 
         self._update_perf_metrics(
             {
@@ -211,3 +262,21 @@ class SplitQueryAgent(AgentToolBase):
             param.query += "\n".join(sub_queries)
         final_episodes = await self._do_rerank(param, result)
         return final_episodes, perf_metrics
+
+    async def _run_single_sub_query(
+        self,
+        policy: QueryPolicy,
+        query: QueryParam,
+    ) -> tuple[str, list[Episode], dict[str, Any], str, int, int]:
+        tool, select_input_token, select_output_token = await self._route_sub_query(
+            policy, query
+        )
+        episodes, metrics = await tool.do_query(policy, query)
+        return (
+            query.query,
+            episodes,
+            metrics,
+            tool.agent_name,
+            select_input_token,
+            select_output_token,
+        )

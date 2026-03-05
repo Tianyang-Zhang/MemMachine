@@ -244,8 +244,76 @@ async def test_split_query_agent_aggregates_sub_queries(
     )
 
     assert results == [episode_a, episode_b]
-    assert metrics["queries"] == ["Q1?", "Q2?"]
+    assert metrics["queries"][:2] == ["Q1?", "Q2?"]
     assert metrics["memory_search_called"] == 2
+
+
+@pytest.mark.asyncio
+async def test_split_query_agent_routes_each_sub_query_with_tool_select(
+    query_policy: QueryPolicy,
+) -> None:
+    now = datetime.now(tz=UTC)
+    episode_a = _build_episode(uid="a", content="alpha", created_at=now)
+    episode_b = _build_episode(
+        uid="b",
+        content="beta",
+        created_at=now + timedelta(seconds=1),
+    )
+    memory = FakeEpisodicMemory({"Q1?": [episode_a], "Q2?": [episode_b]})
+    reranker = DummyReranker()
+    memory_agent = MemMachineAgent(
+        AgentToolBaseParam(
+            model=None,
+            children_tools=[],
+            extra_params={},
+            reranker=reranker,
+        ),
+    )
+    coq_agent = ChainOfQueryAgent(
+        AgentToolBaseParam(
+            model=DummyLanguageModel(
+                '{"is_sufficient": true, "evidence_indices": [0], "new_query": "Q1?", "confidence_score": 1.0, "stage_result": "alpha"}'
+            ),
+            children_tools=[memory_agent],
+            extra_params={},
+            reranker=reranker,
+        ),
+    )
+    split_model = DummyLanguageModel("Q1?\nQ2?")
+    split_agent = SplitQueryAgent(
+        AgentToolBaseParam(
+            model=split_model,
+            children_tools=[memory_agent, coq_agent],
+            extra_params={},
+            reranker=reranker,
+        ),
+    )
+    selector_model = DummyLanguageModel(["ChainOfQueryAgent", "SplitQueryAgent"])
+    selector_agent = ToolSelectAgent(
+        AgentToolBaseParam(
+            model=selector_model,
+            children_tools=[coq_agent, split_agent, memory_agent],
+            extra_params={"default_tool_name": "MemMachineAgent"},
+            reranker=reranker,
+        ),
+    )
+    split_agent.set_tool_selector(selector_agent)
+
+    results, metrics = await split_agent.do_query(
+        query_policy,
+        QueryParam(query="original?", limit=10, memory=memory),
+    )
+
+    contents = [episode.content for episode in results]
+    assert any(content.startswith("[StageResult 1] Query: Q1?") for content in contents)
+    assert episode_b in results
+    assert metrics["queries"][:2] == ["Q1?", "Q2?"]
+    assert metrics["subquery_selected_tools"] == [
+        {"query": "Q1?", "selected_tool": "ChainOfQueryAgent"},
+        {"query": "Q2?", "selected_tool": "MemMachineAgent"},
+    ]
+    assert selector_model.call_count == 2
+    assert sorted(memory.queries) == ["Q1?", "Q2?"]
 
 
 @pytest.mark.asyncio
@@ -278,7 +346,7 @@ async def test_tool_select_agent_uses_selected_tool(
     coq_agent = ChainOfQueryAgent(
         AgentToolBaseParam(
             model=DummyLanguageModel(
-                '{"is_sufficient": true, "evidence_indices": [], "new_query": "", "confidence_score": 1.0}'
+                '{"is_sufficient": true, "evidence_indices": [0], "new_query": "tool query", "confidence_score": 1.0, "stage_result": "tool-select"}'
             ),
             children_tools=[memory_agent],
             extra_params={},
@@ -299,7 +367,11 @@ async def test_tool_select_agent_uses_selected_tool(
         QueryParam(query="tool query", limit=5, memory=memory),
     )
 
-    assert results == [episode]
+    assert len(results) == 2
+    assert any(
+        content.startswith("[StageResult 1] Query: tool query")
+        for content in [episode.content for episode in results]
+    )
     assert metrics["selected_tool"] == "ChainOfQueryAgent"
     assert selector_model.call_count == 1
 
@@ -339,9 +411,9 @@ async def test_chain_of_query_agent_rewrites_and_accumulates_evidence(
     )
     coq_model = DummyLanguageModel(
         [
-            '{"is_sufficient": false, "evidence_indices": [0], "new_query": "sub_query_1", "confidence_score": 1.0}',
-            '{"is_sufficient": false, "evidence_indices": [0, 1], "new_query": "sub_query_2", "confidence_score": 1.0}',
-            '{"is_sufficient": true, "evidence_indices": [0, 1, 2], "new_query": "", "confidence_score": 1.0}',
+            '{"is_sufficient": false, "evidence_indices": [0], "new_query": "sub_query_1", "confidence_score": 1.0, "stage_result": "fact1"}',
+            '{"is_sufficient": false, "evidence_indices": [0, 1], "new_query": "sub_query_2", "confidence_score": 1.0, "stage_result": "fact2"}',
+            '{"is_sufficient": true, "evidence_indices": [0, 1, 2], "new_query": "original_query?", "confidence_score": 1.0, "stage_result": "fact3"}',
         ]
     )
     coq_agent = ChainOfQueryAgent(
@@ -358,11 +430,140 @@ async def test_chain_of_query_agent_rewrites_and_accumulates_evidence(
         QueryParam(query="original_query?", limit=10, memory=memory),
     )
 
-    assert {episode.uid for episode in results} == {"fact1", "fact2", "fact3"}
+    result_contents = [episode.content for episode in results]
+    assert any(
+        content.startswith("[StageResult 1] Query: original_query?")
+        for content in result_contents
+    )
+    assert any(
+        content.startswith("[StageResult 2] Query: sub_query_1")
+        for content in result_contents
+    )
+    assert any(
+        content.startswith("[StageResult 3] Query: sub_query_2")
+        for content in result_contents
+    )
+    assert any(content == "[SubQuery 1] original_query?" for content in result_contents)
+    assert any(content == "[SubQuery 2] sub_query_1" for content in result_contents)
+    assert any(content == "[SubQuery 3] sub_query_2" for content in result_contents)
     assert coq_model.call_count == 3
     assert memory.queries == ["original_query?", "sub_query_1", "sub_query_2"]
     assert metrics["queries"] == ["original_query?", "sub_query_1", "sub_query_2"]
     assert metrics["memory_search_called"] == 3
+    assert metrics["stage_result_memory_returned"] is True
+
+
+@pytest.mark.asyncio
+async def test_chain_of_query_agent_solves_multiple_hops_in_one_llm_turn(
+    query_policy: QueryPolicy,
+) -> None:
+    now = datetime.now(tz=UTC)
+    first_hop = _build_episode(
+        uid="h1",
+        content="Prince A's mother is Princess B.",
+        created_at=now,
+    )
+    second_hop = _build_episode(
+        uid="h2",
+        content="Princess B died in Meran.",
+        created_at=now + timedelta(seconds=1),
+    )
+    original_query = "Where did Prince A's mother die?"
+    second_hop_query = "Where did Princess B die?"
+    memory = FakeEpisodicMemory(
+        {
+            original_query: [first_hop],
+            second_hop_query: [second_hop],
+        }
+    )
+    reranker = DummyReranker()
+    memory_agent = MemMachineAgent(
+        AgentToolBaseParam(
+            model=None,
+            children_tools=[],
+            extra_params={},
+            reranker=reranker,
+        ),
+    )
+    coq_model = DummyLanguageModel(
+        [
+            '{"is_sufficient": false, "evidence_indices": [0], "new_query": "Where did Princess B die?", "confidence_score": 0.95, "stage_results": [{"query": "Who is Prince A\'s mother?", "stage_result": "Princess B", "confidence_score": 0.95}], "generated_sub_queries": ["Who is Prince A\'s mother?", "Where did Princess B die?"]}',
+            '{"is_sufficient": true, "evidence_indices": [0, 1], "new_query": "Where did Prince A\'s mother die?", "confidence_score": 0.95, "stage_results": [{"query": "Where did Princess B die?", "stage_result": "Meran", "confidence_score": 0.95}], "generated_sub_queries": []}',
+        ]
+    )
+    coq_agent = ChainOfQueryAgent(
+        AgentToolBaseParam(
+            model=coq_model,
+            children_tools=[memory_agent],
+            extra_params={"max_attempts": 3},
+            reranker=reranker,
+        ),
+    )
+
+    results, metrics = await coq_agent.do_query(
+        query_policy,
+        QueryParam(query=original_query, limit=10, memory=memory),
+    )
+
+    result_contents = [episode.content for episode in results]
+    assert any("Who is Prince A's mother?" in content for content in result_contents)
+    assert any("Princess B" in content for content in result_contents)
+    assert any("Where did Princess B die?" in content for content in result_contents)
+    assert any("Meran" in content for content in result_contents)
+    assert memory.queries == [original_query, second_hop_query]
+    assert metrics["queries"] == [original_query, second_hop_query]
+    assert metrics["memory_search_called"] == 2
+    assert metrics["stage_result_memory_returned"] is True
+
+
+@pytest.mark.asyncio
+async def test_chain_of_query_agent_returns_high_conf_stage_results_when_insufficient(
+    query_policy: QueryPolicy,
+) -> None:
+    now = datetime.now(tz=UTC)
+    source_episode = _build_episode(
+        uid="src",
+        content="person_a parent person_b",
+        created_at=now,
+    )
+    memory = FakeEpisodicMemory({"Q?": [source_episode]})
+    reranker = DummyReranker()
+    memory_agent = MemMachineAgent(
+        AgentToolBaseParam(
+            model=None,
+            children_tools=[],
+            extra_params={},
+            reranker=reranker,
+        ),
+    )
+    coq_model = DummyLanguageModel(
+        '{"is_sufficient": false, "evidence_indices": [0], "new_query": "Q?", "confidence_score": 0.6, "stage_results": [{"query": "Who is person_a parent?", "stage_result": "person_b", "confidence_score": 0.91}], "generated_sub_queries": ["Who is person_a parent?", "Where did person_b die?"]}'
+    )
+    coq_agent = ChainOfQueryAgent(
+        AgentToolBaseParam(
+            model=coq_model,
+            children_tools=[memory_agent],
+            extra_params={"max_attempts": 3},
+            reranker=reranker,
+        ),
+    )
+
+    results, metrics = await coq_agent.do_query(
+        query_policy,
+        QueryParam(query="Q?", limit=10, memory=memory),
+    )
+
+    contents = [episode.content for episode in results]
+    assert any(
+        content.startswith("[StageResult 1] Query: Who is person_a parent?")
+        for content in contents
+    )
+    assert any(
+        content == "[SubQuery 1] Who is person_a parent?" for content in contents
+    )
+    assert source_episode in results
+    assert metrics["stage_result_memory_returned"] is True
+    assert metrics["returned_stage_result_count"] == 2
 
 
 @pytest.mark.asyncio

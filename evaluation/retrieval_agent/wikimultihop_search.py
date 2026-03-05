@@ -25,22 +25,27 @@ ANSWER_PROMPT = """You are asked to answer `{question}` using `{memories}` as th
    - If `{question}` is malformed, underspecified, or missing key constraints, ask exactly one concise clarifying question instead of answering.
 
 2. Choose the evidence basis using this strict priority:
-   (a) **Memory-explicit**: Use when `{memories}` contain at least one explicit statement that answers the question or provides all necessary facts.
-   (b) **Memory-determined inference**: Use when explicit memory facts, taken together, *fully determine* the answer unambiguously (show minimal reasoning).
-   (c) **Open-domain fallback**: Use general world knowledge when memories are empty/irrelevant/too vague OR do not fully determine the answer.
+   (a) **Stage-result first**: If `{memories}` include lines formatted like `[StageResult N] ...`, use those stage-results first as authoritative intermediate facts.
+   (b) **Retrieved-episodes second**: If stage-results are missing or insufficient, use other retrieved memory lines.
+   (c) **Open-domain fallback**: Use general world knowledge only when stage-results and retrieved episodes together still do not determine the answer.
 
-3. Uncertainty rule:
+3. How to use stage-results:
+   - Treat `[SubQuery N]` lines as workflow traces only (not final facts).
+   - Prefer stage-results with higher confidence values when conflicts occur.
+   - If stage-results directly answer the question, do not ignore them in favor of unrelated retrieved episodes.
+
+4. Uncertainty rule:
    - Do **not** say “unknown/not mentioned” if open-domain knowledge can reasonably answer.
    - If neither memories nor general knowledge allow a confident answer, say “I don’t know” (optionally add a brief reason).
 
-4. Ambiguity handling:
+5. Ambiguity handling:
    - If multiple plausible entities/answers remain after normalization, provide the top candidates and note the ambiguity briefly.
    - If multiple valid answers are genuinely possible, enumerate them (comma-separated or short bullets).
 
-5. Computation and counting:
+6. Computation and counting:
    - For counts or time intervals, compute explicitly (brief enumeration or numeric subtraction) to avoid mistakes.
 
-6. Output requirements (concise, auditable):
+7. Output requirements (concise, auditable):
    - Provide the **Answer** only, without additional commentary.
    - Keep the total response to **max 2 sentences**, except when enumeration/computation is required; then use **up to 4 short lines** (bullets allowed) while staying as brief as possible.
 </instructions>

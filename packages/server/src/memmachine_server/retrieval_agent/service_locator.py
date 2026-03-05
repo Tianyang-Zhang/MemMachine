@@ -32,22 +32,23 @@ def create_retrieval_agent(
     if agent_name == memory_agent.agent_name:
         return memory_agent
 
-    shared_param = AgentToolBaseParam(
+    coq_param = AgentToolBaseParam(
         model=model,
         children_tools=[memory_agent],
         extra_params={},
         reranker=reranker,
     )
+    coq_agent = ChainOfQueryAgent(coq_param)
 
-    coq_agent = ChainOfQueryAgent(shared_param)
-    split_agent = SplitQueryAgent(shared_param)
+    split_param = AgentToolBaseParam(
+        model=model,
+        children_tools=[memory_agent, coq_agent],
+        extra_params={},
+        reranker=reranker,
+    )
+    split_agent = SplitQueryAgent(split_param)
 
-    if agent_name == coq_agent.agent_name:
-        return coq_agent
-    if agent_name == split_agent.agent_name:
-        return split_agent
-
-    return ToolSelectAgent(
+    tool_select_agent = ToolSelectAgent(
         AgentToolBaseParam(
             model=model,
             children_tools=[split_agent, coq_agent, memory_agent],
@@ -55,3 +56,13 @@ def create_retrieval_agent(
             reranker=reranker,
         ),
     )
+    split_agent.set_tool_selector(tool_select_agent)
+
+    if agent_name == coq_agent.agent_name:
+        return coq_agent
+    if agent_name == split_agent.agent_name:
+        return split_agent
+    if agent_name == tool_select_agent.agent_name:
+        return tool_select_agent
+
+    return tool_select_agent
