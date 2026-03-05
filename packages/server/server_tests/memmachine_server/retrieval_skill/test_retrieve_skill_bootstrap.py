@@ -77,7 +77,7 @@ class FailingLanguageModel(DummyLanguageModel):
     ) -> tuple[str, Any, int, int]:
         _ = args, kwargs
         return (
-            '{"selected_route":"direct_memory","confidence_score":0.93,"reason_code":"default"}',
+            '{"selected_route":"memmachine_search","confidence_score":0.93,"reason_code":"default"}',
             None,
             1,
             1,

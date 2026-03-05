@@ -31,28 +31,6 @@ class SkillToolCallRecord(BaseModel):
     raw_result: dict[str, object] | None = None
 
 
-class SubSkillRunRecord(BaseModel):
-    """A single spawned sub-skill execution record."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    step: int = Field(ge=0)
-    skill_name: str
-    query: str
-    status: str
-    fallback_trigger_reason: str | None = None
-    tool_calls: list[SkillToolCallRecord] = Field(default_factory=list)
-    llm_call_count: int = 0
-    llm_input_tokens: int = 0
-    llm_output_tokens: int = 0
-    llm_time: float = 0.0
-    episodes_returned: int = 0
-    branch_total: int = 0
-    branch_success_count: int = 0
-    branch_failure_count: int = 0
-    branch_retry_count: int = 0
-
-
 class TopLevelSkillSessionState(BaseModel):
     """Persistent state owned by top-level skill during one query lifecycle."""
 
@@ -64,7 +42,6 @@ class TopLevelSkillSessionState(BaseModel):
     current_step: int = 0
     events: list[SkillSessionEvent] = Field(default_factory=list)
     tool_calls: list[SkillToolCallRecord] = Field(default_factory=list)
-    sub_skill_runs: list[SubSkillRunRecord] = Field(default_factory=list)
     merged_episodes: list[Episode] = Field(default_factory=list)
     final_response: str | None = None
     completed: bool = False
@@ -123,45 +100,6 @@ class TopLevelSkillSessionState(BaseModel):
         self.tool_calls.append(record)
         return record
 
-    def record_sub_skill_run(
-        self,
-        *,
-        skill_name: str,
-        query: str,
-        status: str,
-        fallback_trigger_reason: str | None = None,
-        tool_calls: list[SkillToolCallRecord] | None = None,
-        llm_call_count: int = 0,
-        llm_input_tokens: int = 0,
-        llm_output_tokens: int = 0,
-        llm_time: float = 0.0,
-        episodes_returned: int = 0,
-        branch_total: int = 0,
-        branch_success_count: int = 0,
-        branch_failure_count: int = 0,
-        branch_retry_count: int = 0,
-    ) -> None:
-        """Append a sub-skill execution record."""
-        self.sub_skill_runs.append(
-            SubSkillRunRecord(
-                step=self.current_step,
-                skill_name=skill_name,
-                query=query,
-                status=status,
-                fallback_trigger_reason=fallback_trigger_reason,
-                tool_calls=tool_calls or [],
-                llm_call_count=llm_call_count,
-                llm_input_tokens=llm_input_tokens,
-                llm_output_tokens=llm_output_tokens,
-                llm_time=llm_time,
-                episodes_returned=episodes_returned,
-                branch_total=branch_total,
-                branch_success_count=branch_success_count,
-                branch_failure_count=branch_failure_count,
-                branch_retry_count=branch_retry_count,
-            )
-        )
-
     def merge_episodes(self, episodes: list[Episode]) -> None:
         """Merge episodes into state while preserving first-seen uid order."""
         existing_uids = {episode.uid for episode in self.merged_episodes}
@@ -179,13 +117,11 @@ class TopLevelSkillSessionState(BaseModel):
 
     def prompt_snapshot(self) -> str:
         """Render compact state summary for model prompts."""
-        skill_names = [run.skill_name for run in self.sub_skill_runs]
         episode_uids = [episode.uid for episode in self.merged_episodes]
         return (
             f"step={self.current_step}; "
             f"events={len(self.events)}; "
             f"tool_calls={len(self.tool_calls)}; "
-            f"sub_skills={skill_names}; "
             f"episodes={episode_uids}; "
             f"completed={self.completed}"
         )
@@ -195,7 +131,4 @@ class TopLevelSkillSessionState(BaseModel):
         return {
             "events": [event.model_dump(mode="json") for event in self.events],
             "tool_calls": [call.model_dump(mode="json") for call in self.tool_calls],
-            "sub_skill_runs": [
-                run.model_dump(mode="json") for run in self.sub_skill_runs
-            ],
         }

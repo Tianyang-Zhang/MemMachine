@@ -18,11 +18,6 @@ SPEC_ROOT = (
     / "skills"
     / "specs"
 )
-SUB_SKILL_SPEC_DIR = SPEC_ROOT / "sub_skills"
-
-
-def _read_sub_skill_spec_text(file_name: str) -> str:
-    return (SUB_SKILL_SPEC_DIR / file_name).read_text(encoding="utf-8")
 
 
 def test_load_markdown_top_level_spec_file() -> None:
@@ -31,45 +26,13 @@ def test_load_markdown_top_level_spec_file() -> None:
 
     assert spec.name == "retrieve-skill"
     assert spec.kind == "top-level"
-    assert "spawn_sub_skill" in spec.allowed_actions
+    assert spec.allowed_actions == ["memmachine_search", "return_final"]
+    assert spec.allowed_tools == ["memmachine_search", "return_final"]
     assert spec.policy_markdown is not None
     assert "## Actions" in spec.policy_markdown
-    assert "direct_memory" in spec.policy_markdown
-
-
-def test_load_markdown_coq_sub_skill_spec_file() -> None:
-    spec_path = SUB_SKILL_SPEC_DIR / "coq.md"
-    spec = load_skill_spec(spec_path)
-
-    assert spec.name == "coq"
-    assert spec.kind == "sub-skill"
-    assert "memmachine_search" in spec.allowed_tools
-    assert "return_sub_skill_result" in spec.allowed_tools
-    assert spec.policy_markdown is not None
-    assert "## Examples" in spec.policy_markdown
-    assert "## Failure Modes" in spec.policy_markdown
-    assert "evidence_indices" in spec.policy_markdown
-
-
-def test_load_markdown_split_sub_skill_spec_file() -> None:
-    spec_path = SUB_SKILL_SPEC_DIR / "split.md"
-    spec = load_skill_spec(spec_path)
-
-    assert spec.name == "split"
-    assert spec.kind == "sub-skill"
-    assert "return_sub_skill_result" in spec.allowed_tools
-    assert spec.policy_markdown is not None
-    assert "## Examples" in spec.policy_markdown
-    assert "## Failure Modes" in spec.policy_markdown
-    assert "sub_queries" in spec.policy_markdown
-
-
-def test_sub_skill_markdown_specs_do_not_use_placeholder_language() -> None:
-    for file_name in ("coq.md", "split.md"):
-        raw_text = _read_sub_skill_spec_text(file_name)
-        lower_text = raw_text.lower()
-        assert "translated from legacy" not in lower_text
-        assert "placeholder summary" not in lower_text
+    assert "MemMachine strengths" in spec.policy_markdown
+    assert "MemMachine limitations" in spec.policy_markdown
+    assert "legacy" not in spec.policy_markdown.lower()
 
 
 def test_markdown_spec_missing_required_section_fails(tmp_path: Path) -> None:

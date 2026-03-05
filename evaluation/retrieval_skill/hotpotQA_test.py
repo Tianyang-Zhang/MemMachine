@@ -168,7 +168,7 @@ async def hotpotqa_search(
             )
         )
 
-        if len(tasks) % 30 == 0 or data == dataset[-1]:
+        if len(tasks) % 25 == 0 or data == dataset[-1]:
             responses.extend(await asyncio.gather(*tasks))
             num_searched += len(tasks)
             print(

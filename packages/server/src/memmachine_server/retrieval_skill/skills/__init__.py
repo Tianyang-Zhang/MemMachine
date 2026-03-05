@@ -9,7 +9,6 @@ from memmachine_server.retrieval_skill.skills.runtime import (
 from memmachine_server.retrieval_skill.skills.session_state import (
     SkillSessionEvent,
     SkillToolCallRecord,
-    SubSkillRunRecord,
     TopLevelSkillSessionState,
 )
 from memmachine_server.retrieval_skill.skills.spec_loader import load_skill_spec
@@ -34,7 +33,6 @@ __all__ = [
     "SkillSessionEvent",
     "SkillSpecV1",
     "SkillToolCallRecord",
-    "SubSkillRunRecord",
     "TopLevelSkillSessionState",
     "build_skill_request",
     "fallback_for_downstream_error",

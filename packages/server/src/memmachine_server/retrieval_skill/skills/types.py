@@ -66,7 +66,7 @@ class SkillSpecV1(BaseModel):
 
     name: str = Field(min_length=1)
     version: Literal["v1"] = SKILL_CONTRACT_VERSION_V1
-    kind: Literal["inline", "top-level", "sub-skill"] = "inline"
+    kind: Literal["inline", "top-level"] = "inline"
     description: str = Field(min_length=1)
     route_name: str = Field(default="retrieve-skill", min_length=1)
     timeout_seconds: int = Field(default=30, ge=1, le=300)

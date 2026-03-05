@@ -134,7 +134,7 @@ async def run_wiki(
             )
         )
 
-        if len(tasks) % 10 == 0 or (q == questions[-1]):
+        if len(tasks) % 25 == 0 or (q == questions[-1]):
             responses = await asyncio.gather(*tasks)
             tasks = []
             skill_utils.update_results(responses, attribute_matrix, results)

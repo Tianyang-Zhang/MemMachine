@@ -55,7 +55,7 @@ class DummyLanguageModel(LanguageModel):
     ) -> tuple[str, Any, int, int]:
         _ = args, kwargs
         return (
-            '{"selected_route":"direct_memory","confidence_score":0.92,"reason_code":"default"}',
+            '{"selected_route":"memmachine_search","confidence_score":0.92,"reason_code":"default"}',
             None,
             0,
             0,
@@ -185,9 +185,7 @@ async def test_retrieve_skill_emits_session_state_metrics(
     assert len(episodes) == 1
     assert metrics["route"] == "RetrieveSkill"
     assert metrics["orchestrator_step_count"] == 1
-    assert metrics["orchestrator_sub_skill_count"] == 0
     assert metrics["orchestrator_event_count"] >= 2
     assert metrics["orchestrator_episode_count"] == 1
     assert metrics["orchestrator_completed"] is True
-    assert metrics["branch_total"] == 0
     assert "rerank_applied" in metrics

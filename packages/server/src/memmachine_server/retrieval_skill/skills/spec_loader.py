@@ -23,12 +23,6 @@ DEFAULT_REQUIRED_SECTIONS: dict[str, list[str]] = {
         "Actions",
         "Completion",
     ],
-    "sub-skill": [
-        "Intent",
-        "Rules",
-        "Tools",
-        "Output Contract",
-    ],
 }
 
 
