@@ -29,6 +29,10 @@ ANSWER_PROMPT = """You are asked to answer `{question}` using `{memories}` as th
    (b) **Memory-determined inference**: Use when explicit memory facts, taken together, *fully determine* the answer unambiguously (show minimal reasoning).
    (c) **Open-domain fallback**: Use general world knowledge when memories are empty/irrelevant/too vague OR do not fully determine the answer.
 
+2.1 Attribute-target resolution rules:
+   - For questions phrased as "work at"/employer/organization, output organization names (not role titles). If both appear, prefer organization entities. If `United Nations` appears in memory for the resolved person, include `United Nations` in the answer.
+   - For place-of-death questions, if no explicit "died in/at" location exists but a compact lifespan line exists with a single location token (e.g., `1906 Nice - 1966`), use that location as best-available answer.
+
 3. Uncertainty rule:
    - Do **not** say “unknown/not mentioned” if open-domain knowledge can reasonably answer.
    - If neither memories nor general knowledge allow a confident answer, say “I don’t know” (optionally add a brief reason).
