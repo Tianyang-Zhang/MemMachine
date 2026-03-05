@@ -6,9 +6,9 @@ current_phase: 16
 current_phase_name: stage-result return contracts and optimization loop
 current_plan: 16-02
 status: in_progress
-stopped_at: round-2 baseline promoted
-last_updated: "2026-03-04T23:10:00.000Z"
-last_activity: 2026-03-04
+stopped_at: round-15 baseline maintained
+last_updated: "2026-03-05T04:05:00.000Z"
+last_activity: 2026-03-05
 progress:
   total_phases: 1
   completed_phases: 0
@@ -34,9 +34,10 @@ optimization loop for v1.2.
 **Current Phase:** 16
 **Current Phase Name:** stage-result return contracts and optimization loop
 **Status:** executing benchmark-gated optimization loop
-**Last Activity:** 2026-03-04
-**Last Activity Description:** Kept Round 2 (`optv6_stage_result_r2`) with
-`llm_score=0.95`; baseline promoted and Round 3+ loop started.
+**Last Activity:** 2026-03-05
+**Last Activity Description:** Kept Round 15
+(`optv6_stage_result_r15`) at `llm_score=0.95`, with benchmark-leak prompt
+examples replaced by generic placeholders and leak scan checks passing.
 **Progress:** [█████-----] 50%
 
 ## Accumulated Context

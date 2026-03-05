@@ -134,8 +134,8 @@ Query-generation policy:
   - a stable anchor from `original_query` (for example film/work/person title).
   This improves reranking survival for final merged episodes.
 - For potentially ambiguous names, include disambiguating appositives in query
-  text when available from evidence (for example `Arshad Khan director of
-  Daadagiri nationality`).
+  text when available from evidence (for example `Alex Rivera director of
+  Example Film nationality`).
 - For later-hop entity-attribute queries, include a stable anchor from
   `original_query` (film/work/person title) in every rewrite; do not drop the
   anchor in follow-up hops.
@@ -144,8 +144,9 @@ Query-generation policy:
   `place of birth`; `country`, `nationality`; `work at`, `employer`,
   `organization`).
 - For death-place targets, include at least one compact-biography lexical
-  variant before exhaustion (for example `[entity] died in`, `[entity] 1906
-  Nice - 1966`, `[entity] biography death place`).
+  variant before exhaustion (for example `[entity] died in`,
+  `[entity] [birth_year] [birth_city] - [death_year]`,
+  `[entity] biography death place`).
 
 Relation-focused query templates (adapt as needed):
 - birthplace: `Where was [entity] born?`
@@ -187,21 +188,25 @@ Answer-type guardrails (required):
 - if question asks for workplace, return an organization/entity name, not only
   a location/country
 - if question asks "work at", prefer an explicit employer/organization
-  affiliation over role titles alone (for example prefer `United Nations` over
-  `Minister of Foreign Affairs` when both appear as career facts)
+  affiliation over role titles alone (for example prefer an explicit
+  organization entity over a government role title when both appear as career
+  facts)
 - if question asks "work at" and multiple organizations are supported, prefer a
   concise organization list over a single role title; include intergovernmental
-  organizations explicitly when present (for example `United Nations`)
+  organizations explicitly when present
 - if multiple plausible values exist for same-name entities, run a
   disambiguating anchored query before sufficiency (include original film/work
   title in the rewrite)
+- for compare/earlier/later/older/younger/same-country questions, do not mark
+  sufficient until both compared sides have explicit grounded target-attribute
+  evidence (or explicit same/different evidence when the target is boolean)
 - death-place proxy fallback (only when explicit death-place evidence is
   missing):
   - allowed only if all evidence refers to the same resolved person and exactly
     one recurring location token appears in compact biography text
   - acceptable proxy patterns include compact lifespan/location lines (for
-    example `1906 Nice - 1966`) or a single recurring city token in short
-    biography snippets
+    example `[birth_year] [city] - [death_year]`) or a single recurring city
+    token in short biography snippets
   - if this fallback is used, set `reason_code=proxy_location_from_bio_line`
     and keep confidence in `0.80-0.88`
   - if multiple proxy candidates or conflicts exist, remain insufficient

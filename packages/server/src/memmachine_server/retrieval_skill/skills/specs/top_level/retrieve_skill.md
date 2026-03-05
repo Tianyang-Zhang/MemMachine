@@ -199,7 +199,8 @@ searches.
     - Prefer answering with the CoQ `answer_candidate` when present.
     - For workplace/organization questions with multiple explicit employers,
       output a concise organization list instead of a single role title. When
-      `United Nations` appears in evidence, include it explicitly in the answer.
+      an intergovernmental organization appears in evidence, include that
+      organization explicitly in the answer.
 16. Best-available proxy rule (insufficient path):
     - If CoQ is insufficient for a location target but evidence contains one
       recurring compact-bio location proxy for the resolved entity (for example

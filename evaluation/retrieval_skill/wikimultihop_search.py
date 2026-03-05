@@ -30,8 +30,10 @@ ANSWER_PROMPT = """You are asked to answer `{question}` using `{memories}` as th
    (c) **Open-domain fallback**: Use general world knowledge when memories are empty/irrelevant/too vague OR do not fully determine the answer.
 
 2.1 Attribute-target resolution rules:
-   - For questions phrased as "work at"/employer/organization, output organization names (not role titles). If both appear, prefer organization entities. If `United Nations` appears in memory for the resolved person, include `United Nations` in the answer.
-   - For place-of-death questions, if no explicit "died in/at" location exists but a compact lifespan line exists with a single location token (e.g., `1906 Nice - 1966`), use that location as best-available answer.
+   - For questions phrased as "work at"/employer/organization, output organization names (not role titles). If both appear, prefer organization entities. If an intergovernmental organization appears in memory for the resolved person, include that organization in the answer.
+   - For place-of-death questions, if no explicit "died in/at" location exists but a compact lifespan line exists with a single location token (e.g., `[birth_year] [city] - [death_year]`), use that location as best-available answer.
+   - For relation-chain questions (parent/spouse/child/grandparent and similar), resolve each hop and return only the final requested entity/attribute, not an intermediate hop entity.
+   - If memory contains `[StageResult ...] Query: ... Answer: ...` lines, treat each `Answer:` field as high-priority distilled evidence for that stage query.
 
 3. Uncertainty rule:
    - Do **not** say “unknown/not mentioned” if open-domain knowledge can reasonably answer.

@@ -24,5 +24,10 @@
 | 8.1 | User decision: reset active gate baseline to reproducible score | n/a | 0.94 | baseline reset | 0.94 |
 | 9 | CoQ/top-level prompt refinements + split planner-only aggregation test | optv6_stage_result_r9 | 0.95 | keep + commit | 0.95 |
 | 10 | Wiki answer prompt preference tuning (workplace/org + compact-lifespan fallback) | optv6_stage_result_r10 | 0.95 | keep + commit | 0.95 |
+| 11 | Accuracy retry after r10 | optv6_stage_result_r11 | 0.94 | discard (below baseline) | 0.95 |
+| 12 | Accuracy retry after r11 | optv6_stage_result_r12 | 0.93 | discard (below baseline) | 0.95 |
+| 13 | Anti-leak prompt cleanup v1 (remove benchmark-specific examples) | optv6_stage_result_r13 | 0.92 | discard (below baseline) | 0.95 |
+| 14 | Anti-leak cleanup rerun (isolated benchmark) | optv6_stage_result_r14 | 0.94 | discard (below baseline) | 0.95 |
+| 15 | Anti-leak generic placeholders + relation-chain/stage-result answer prompt tightening | optv6_stage_result_r15 | 0.95 | keep + commit | 0.95 |
 
 \* Historical kept baseline remained 0.95, but active optimization gate was reset to 0.94 after reproducibility check per user instruction.
