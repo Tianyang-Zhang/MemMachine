@@ -23,5 +23,6 @@
 | 8 | Baseline reproducibility check (no net code delta from kept commit) | optv6_stage_result_r8_baseline_check | 0.94 | reproducibility drop observed | 0.95* |
 | 8.1 | User decision: reset active gate baseline to reproducible score | n/a | 0.94 | baseline reset | 0.94 |
 | 9 | CoQ/top-level prompt refinements + split planner-only aggregation test | optv6_stage_result_r9 | 0.95 | keep + commit | 0.95 |
+| 10 | Wiki answer prompt preference tuning (workplace/org + compact-lifespan fallback) | optv6_stage_result_r10 | 0.95 | keep + commit | 0.95 |
 
 \* Historical kept baseline remained 0.95, but active optimization gate was reset to 0.94 after reproducibility check per user instruction.
