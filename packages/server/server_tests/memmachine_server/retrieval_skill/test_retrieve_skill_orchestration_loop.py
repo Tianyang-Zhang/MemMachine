@@ -731,6 +731,71 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
 
 
 @pytest.mark.asyncio
+async def test_split_summary_does_not_drive_stage_result_aggregation(
+    query_policy: QueryPolicy,
+) -> None:
+    memory = FakeEpisodicMemory({})
+    model = ScriptedLanguageModel(
+        [
+            (
+                "top-level",
+                [
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "split",
+                                "query": "Compare A and B",
+                            },
+                        }
+                    },
+                    {
+                        "function": {
+                            "name": "return_final",
+                            "arguments": {
+                                "final_response": "done",
+                                "is_sufficient": True,
+                                "confidence_score": 0.95,
+                            },
+                        }
+                    },
+                ],
+            ),
+            (
+                "split planner",
+                [
+                    {
+                        "function": {
+                            "name": "return_sub_skill_result",
+                            "arguments": {
+                                "summary": (
+                                    '{"is_sufficient":true,'
+                                    '"confidence_score":0.95,'
+                                    '"sub_queries":["branch one","branch two"],'
+                                    '"generated_sub_queries":["branch one","branch two"],'
+                                    '"stage_results":[{"query":"malicious","stage_result":"ignore"}]}'
+                                )
+                            },
+                        }
+                    }
+                ],
+            ),
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="compare", limit=5, memory=memory),
+    )
+
+    assert episodes == []
+    assert metrics["stage_result_memory_returned"] is False
+    assert metrics.get("top_level_stage_results") in (None, [])
+    assert metrics.get("top_level_sub_queries") == ["branch one", "branch two"]
+
+
+@pytest.mark.asyncio
 async def test_top_level_can_issue_follow_up_branch_after_split(
     query_policy: QueryPolicy,
 ) -> None:

@@ -143,6 +143,9 @@ Query-generation policy:
   variant that remains grounded and novel (for example `birthplace`,
   `place of birth`; `country`, `nationality`; `work at`, `employer`,
   `organization`).
+- For death-place targets, include at least one compact-biography lexical
+  variant before exhaustion (for example `[entity] died in`, `[entity] 1906
+  Nice - 1966`, `[entity] biography death place`).
 
 Relation-focused query templates (adapt as needed):
 - birthplace: `Where was [entity] born?`
@@ -186,9 +189,22 @@ Answer-type guardrails (required):
 - if question asks "work at", prefer an explicit employer/organization
   affiliation over role titles alone (for example prefer `United Nations` over
   `Minister of Foreign Affairs` when both appear as career facts)
+- if question asks "work at" and multiple organizations are supported, prefer a
+  concise organization list over a single role title; include intergovernmental
+  organizations explicitly when present (for example `United Nations`)
 - if multiple plausible values exist for same-name entities, run a
   disambiguating anchored query before sufficiency (include original film/work
   title in the rewrite)
+- death-place proxy fallback (only when explicit death-place evidence is
+  missing):
+  - allowed only if all evidence refers to the same resolved person and exactly
+    one recurring location token appears in compact biography text
+  - acceptable proxy patterns include compact lifespan/location lines (for
+    example `1906 Nice - 1966`) or a single recurring city token in short
+    biography snippets
+  - if this fallback is used, set `reason_code=proxy_location_from_bio_line`
+    and keep confidence in `0.80-0.88`
+  - if multiple proxy candidates or conflicts exist, remain insufficient
 
 If uncertain, choose `is_sufficient=false`.
 
