@@ -102,9 +102,11 @@ Never skip the earliest blocking hop. If final asked attribute is unresolved,
 next query must target that unresolved dependency chain, not a side fact.
 
 Step budget guardrail:
-- Keep total `memmachine_search` calls <= 6.
-- If unresolved near budget end, finalize with best-supported answer/proxy
-  rather than drifting into repetitive rewrites that risk max-step fallback.
+- Keep total `memmachine_search` calls <= 7.
+- Reserve the final call for the unresolved final asked attribute (not side hops).
+- If unresolved near budget end, spend the last call on one grounded lexical/alias
+  variant for the final asked attribute before finalizing with best-supported
+  answer/proxy.
 
 Before finalizing, verify final-hop coverage:
 - At least one issued query must target the final asked attribute.
@@ -171,9 +173,11 @@ Relation-focused templates (adapt):
 
 Final-target lexical variants (use at most one grounded variant when needed):
 - birthplace: `place of birth`, `born in`
-- death place: `place of death`, `died in`
+- death place: `place of death`, `died in`, `died at`
 - nationality/country: `nationality`, `country of citizenship`
 - employer/workplace: `employer`, `organization worked for`
+- for names with diacritics or transliteration variance, try one normalized alias
+  form in the final-target hop (for example `Greville` vs `Gréville`).
 
 If no grounded novel query exists, finalize as insufficient.
 

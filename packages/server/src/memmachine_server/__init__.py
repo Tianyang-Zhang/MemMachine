@@ -1,6 +1,17 @@
 """Public package exports and utilities for MemMachine server."""
 
-from memmachine_server.main.memmachine import MemMachine
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from memmachine_server.main.memmachine import MemMachine as MemMachine
+
+
+def __getattr__(name: str) -> Any:
+    if name == "MemMachine":
+        from memmachine_server.main.memmachine import MemMachine as _MemMachine
+
+        return _MemMachine
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def setup_nltk() -> None:
