@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from memmachine_server.common.episode_store import Episode
 from memmachine_server.common.episode_store.episode_model import episodes_to_string
 from memmachine_server.common.language_model import (
+    ProviderSkillBundle,
     SkillLanguageModel,
     SkillLanguageModelError,
     SkillRunResult,
@@ -17,6 +18,7 @@ from memmachine_server.common.language_model import (
     SkillSessionModelProtocol,
     SkillToolCallFormatError,
     SkillToolNotFoundError,
+    materialize_provider_skill_bundle,
 )
 from memmachine_server.common.language_model.language_model import LanguageModel
 from memmachine_server.retrieval_skill.common.skill_api import (
@@ -60,6 +62,7 @@ class SubSkillExecutionResult(BaseModel):
     branch_success_count: int = 0
     branch_failure_count: int = 0
     branch_retry_count: int = 0
+    normalization_warnings: list[str] = Field(default_factory=list)
 
 
 class SubSkillRunner:
@@ -74,6 +77,8 @@ class SubSkillRunner:
         spec_root: Path | None = None,
         split_parallel_cap: int = 5,
         split_branch_retry_limit: int = 1,
+        use_provider_native_skills: bool = False,
+        native_skill_bundle_root: str | None = None,
     ) -> None:
         """Initialize sub-skill runtime dependencies."""
         self._model = model
@@ -87,6 +92,8 @@ class SubSkillRunner:
         )
         self._split_parallel_cap = max(1, split_parallel_cap)
         self._split_branch_retry_limit = max(0, split_branch_retry_limit)
+        self._use_provider_native_skills = use_provider_native_skills
+        self._native_skill_bundle_root = native_skill_bundle_root
 
     @staticmethod
     def _normalize_query_for_cache(query: str) -> str:
@@ -155,6 +162,22 @@ class SubSkillRunner:
                 ),
             )
         return spec
+
+    def _native_skill_bundles(
+        self,
+        *,
+        spec: SkillSpecV1,
+    ) -> list[ProviderSkillBundle] | None:
+        if not self._use_provider_native_skills:
+            return None
+        markdown = spec.policy_markdown or spec.description
+        bundle = materialize_provider_skill_bundle(
+            name=spec.name,
+            description=spec.description,
+            skill_markdown=markdown,
+            bundle_root=self._native_skill_bundle_root,
+        )
+        return [bundle]
 
     def _raise_invalid_output(self, *, why: str, fallback_reason: str) -> None:
         raise SkillContractError(
@@ -297,6 +320,7 @@ class SubSkillRunner:
         policy: QueryPolicy,
         query: QueryParam,
         user_prompt: str | None = None,
+        max_tool_calls: int | None = None,
     ) -> SubSkillExecutionResult:
         prompt = spec.policy_markdown or spec.description
         bounded_max_steps = max(1, spec.max_steps)
@@ -402,7 +426,12 @@ class SubSkillRunner:
 
         try:
             live_result = await self._session_model.run_live_session(
-                system_prompt=prompt,
+                system_prompt=(
+                    "Use the attached sub-skill and available tools to resolve "
+                    "the user request."
+                    if self._use_provider_native_skills
+                    else prompt
+                ),
                 user_prompt=user_prompt or f"sub-skill query: {query.query}",
                 tools=sub_skill_tool_schemas(spec.allowed_tools),
                 tool_registry={
@@ -411,6 +440,7 @@ class SubSkillRunner:
                 },
                 max_turns=bounded_max_steps,
                 timeout_seconds=float(spec.timeout_seconds),
+                provider_skill_bundles=self._native_skill_bundles(spec=spec),
             )
         except SkillToolCallFormatError:
             self._raise_invalid_output(
@@ -452,6 +482,14 @@ class SubSkillRunner:
             query=query,
             memmachine_call_details=memmachine_call_details,
         )
+        if max_tool_calls is not None and len(result.tool_calls) > max_tool_calls:
+            self._raise_invalid_output(
+                why=(
+                    "Sub-skill tool-call budget exceeded: "
+                    f"{len(result.tool_calls)} > {max_tool_calls}."
+                ),
+                fallback_reason="session_call_budget_exceeded",
+            )
         result.llm_time = float(live_result.llm_time_seconds)
         result.llm_call_count = int(live_result.turn_count)
         result.llm_input_tokens = int(live_result.llm_input_tokens)
@@ -460,6 +498,7 @@ class SubSkillRunner:
         result.memory_retrieval_time = memory_retrieval_time
         result.summary = summary_from_tool or live_result.final_response.strip()
         result.episodes = self._dedupe_episodes(result.episodes)
+        result.normalization_warnings = list(live_result.normalization_warnings)
         result.status = "success"
         return result
 
@@ -469,6 +508,7 @@ class SubSkillRunner:
         skill_name: str,
         policy: QueryPolicy,
         query: QueryParam,
+        max_tool_calls: int | None = None,
     ) -> SubSkillExecutionResult:
         """Execute one sub-skill and return merged episodes + tool-call records."""
         spec = self._load_sub_skill_spec(skill_name)
@@ -477,4 +517,5 @@ class SubSkillRunner:
             spec=spec,
             policy=policy,
             query=query,
+            max_tool_calls=max_tool_calls,
         )

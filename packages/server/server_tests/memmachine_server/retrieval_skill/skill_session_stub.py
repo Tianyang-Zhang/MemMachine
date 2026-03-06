@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from memmachine_server.common.language_model import (
+    ProviderSkillBundle,
     SkillRunResult,
     SkillSessionLimitError,
     SkillToolCallFormatError,
@@ -30,8 +31,9 @@ class ScriptedSkillSessionModel:
         tool_choice: str | dict[str, str] = "auto",
         max_turns: int = 16,
         timeout_seconds: float | None = None,
+        provider_skill_bundles: list[ProviderSkillBundle] | None = None,
     ) -> SkillRunResult:
-        _ = max_turns, timeout_seconds
+        _ = max_turns, timeout_seconds, provider_skill_bundles
         output, function_calls = await self._model.generate_response(
             system_prompt=system_prompt,
             user_prompt=user_prompt,

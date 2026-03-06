@@ -10,9 +10,12 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 from uuid import uuid4
 
+import httpx
 import json_repair
 import openai
 from pydantic import BaseModel, ConfigDict, Field, InstanceOf
+
+from .provider_skill_bundle import ProviderSkillBundle
 
 ToolHandler = Callable[[dict[str, object]], object | Awaitable[object]]
 
@@ -58,6 +61,7 @@ class SkillRunResult(BaseModel):
     llm_output_tokens: int = 0
     llm_time_seconds: float = 0.0
     turn_count: int = 0
+    normalization_warnings: list[str] = Field(default_factory=list)
 
 
 class SkillOpenAISessionLanguageModelParams(BaseModel):
@@ -67,6 +71,9 @@ class SkillOpenAISessionLanguageModelParams(BaseModel):
     model: str = Field(min_length=1)
     max_retry_interval_seconds: int = Field(default=120, gt=0)
     reasoning_effort: str | None = None
+    log_raw_output: bool = False
+    use_provider_native_skills: bool = False
+    native_skill_environment: str = Field(default="local")
 
 
 class SkillSessionModelProtocol(Protocol):
@@ -82,6 +89,7 @@ class SkillSessionModelProtocol(Protocol):
         tool_choice: str | dict[str, str] = "auto",
         max_turns: int = 16,
         timeout_seconds: float | None = None,
+        provider_skill_bundles: list[ProviderSkillBundle] | None = None,
     ) -> SkillRunResult: ...
 
 
@@ -94,11 +102,18 @@ class SkillLanguageModel:
         self._model = params.model
         self._max_retry_interval_seconds = params.max_retry_interval_seconds
         self._reasoning_effort = params.reasoning_effort
+        self._log_raw_output = params.log_raw_output
+        self._use_provider_native_skills = params.use_provider_native_skills
+        self._native_skill_environment = params.native_skill_environment
 
     @classmethod
     def from_openai_responses_language_model(
         cls,
         model: object,
+        *,
+        log_raw_output: bool = False,
+        use_provider_native_skills: bool = False,
+        native_skill_environment: str = "local",
     ) -> SkillLanguageModel:
         """Build from existing OpenAIResponsesLanguageModel instance."""
         from .openai_responses_language_model import OpenAIResponsesLanguageModel
@@ -114,10 +129,13 @@ class SkillLanguageModel:
                 model=model.model_name,
                 max_retry_interval_seconds=model.max_retry_interval_seconds,
                 reasoning_effort=model.reasoning_effort,
+                log_raw_output=log_raw_output,
+                use_provider_native_skills=use_provider_native_skills,
+                native_skill_environment=native_skill_environment,
             )
         )
 
-    async def run_live_session(
+    async def run_live_session(  # noqa: C901
         self,
         *,
         system_prompt: str,
@@ -127,6 +145,7 @@ class SkillLanguageModel:
         tool_choice: str | dict[str, str] = "auto",
         max_turns: int = 16,
         timeout_seconds: float | None = None,
+        provider_skill_bundles: list[ProviderSkillBundle] | None = None,
     ) -> SkillRunResult:
         """Run one live model session until no more function calls are emitted."""
         if max_turns <= 0:
@@ -139,11 +158,16 @@ class SkillLanguageModel:
         output_tokens_total = 0
         llm_time_total = 0.0
         raw_model_output = ""
+        normalization_warnings: list[str] = []
         last_response_id: str | None = None
         current_input: list[dict[str, object]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        resolved_tools = self._resolve_request_tools(
+            tools=tools,
+            provider_skill_bundles=provider_skill_bundles,
+        )
 
         while True:
             if turn_count >= max_turns:
@@ -157,7 +181,7 @@ class SkillLanguageModel:
             request: dict[str, object] = {
                 "model": self._model,
                 "input": current_input,
-                "tools": tools,
+                "tools": resolved_tools,
                 "tool_choice": tool_choice,
             }
             if self._reasoning_effort is not None:
@@ -172,13 +196,22 @@ class SkillLanguageModel:
             llm_time_total += time.monotonic() - llm_call_started
             turn_count += 1
 
+            if self._log_raw_output:
+                logger.debug(
+                    "OpenAI skill session raw response turn=%d payload=%s",
+                    turn_count,
+                    self._serialize_response_for_logging(response),
+                )
+
             last_response_id = self._response_id(response)
-            usage = self._response_usage(response)
+            usage, usage_warnings = self._response_usage(response)
+            normalization_warnings.extend(usage_warnings)
             input_tokens_total += usage["input_tokens"]
             output_tokens_total += usage["output_tokens"]
 
             raw_model_output = self._response_output_text(response)
-            response_items = self._response_items(response)
+            response_items, response_item_warnings = self._response_items(response)
+            normalization_warnings.extend(response_item_warnings)
             function_calls = [
                 item
                 for item in response_items
@@ -193,6 +226,7 @@ class SkillLanguageModel:
                     llm_output_tokens=output_tokens_total,
                     llm_time_seconds=llm_time_total,
                     turn_count=turn_count,
+                    normalization_warnings=normalization_warnings,
                 )
 
             executions = await self._execute_function_calls(
@@ -326,7 +360,16 @@ class SkillLanguageModel:
                     sleep_seconds * 2,
                     self._max_retry_interval_seconds,
                 )
+            except TypeError as err:
+                if self._use_provider_native_skills:
+                    return await self._call_responses_create_http_fallback(**kwargs)
+                raise SkillLanguageModelError(
+                    f"[call uuid: {call_uuid}] OpenAI responses.create failed "
+                    "with TypeError."
+                ) from err
             except openai.OpenAIError as err:
+                if self._should_fallback_to_http(err):
+                    return await self._call_responses_create_http_fallback(**kwargs)
                 raise SkillLanguageModelError(
                     f"[call uuid: {call_uuid}] OpenAI responses.create failed "
                     f"with non-retryable {type(err).__name__}."
@@ -350,32 +393,70 @@ class SkillLanguageModel:
         value = getattr(response, "output_text", "")
         return value if isinstance(value, str) else ""
 
-    def _response_usage(self, response: object) -> dict[str, int]:
+    def _response_usage(self, response: object) -> tuple[dict[str, int], list[str]]:
+        warnings: list[str] = []
         if isinstance(response, dict):
             usage = response.get("usage", {}) or {}
-            return {
-                "input_tokens": int(usage.get("input_tokens", 0) or 0),
-                "output_tokens": int(usage.get("output_tokens", 0) or 0),
-            }
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            if not isinstance(input_tokens, int):
+                warnings.append("usage_input_tokens_missing_or_invalid")
+            if not isinstance(output_tokens, int):
+                warnings.append("usage_output_tokens_missing_or_invalid")
+            return (
+                {
+                    "input_tokens": int(input_tokens or 0),
+                    "output_tokens": int(output_tokens or 0),
+                },
+                warnings,
+            )
         usage = getattr(response, "usage", None)
         if usage is None:
-            return {"input_tokens": 0, "output_tokens": 0}
-        return {
-            "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
-            "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
-        }
+            return (
+                {"input_tokens": 0, "output_tokens": 0},
+                ["usage_missing"],
+            )
+        input_tokens = getattr(usage, "input_tokens", None)
+        output_tokens = getattr(usage, "output_tokens", None)
+        if not isinstance(input_tokens, int):
+            warnings.append("usage_input_tokens_missing_or_invalid")
+        if not isinstance(output_tokens, int):
+            warnings.append("usage_output_tokens_missing_or_invalid")
+        return (
+            {
+                "input_tokens": int(input_tokens or 0),
+                "output_tokens": int(output_tokens or 0),
+            },
+            warnings,
+        )
 
-    def _response_items(self, response: object) -> list[dict[str, object]]:  # noqa: C901
+    def _response_items(  # noqa: C901
+        self,
+        response: object,
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        warnings: list[str] = []
         if isinstance(response, dict):
             items = response.get("output", [])
             if not isinstance(items, list):
-                return []
-            return [item for item in items if isinstance(item, dict)]
+                return [], ["response_output_missing_or_invalid"]
+            normalized_items: list[dict[str, object]] = []
+            for item in items:
+                if isinstance(item, dict):
+                    item_type = str(item.get("type", ""))
+                    if item_type and item_type not in {"function_call", "reasoning"}:
+                        warnings.append(
+                            f"unsupported_response_item_type:{item_type}"
+                        )
+                    normalized_items.append(item)
+            return normalized_items, warnings
 
         items = getattr(response, "output", []) or []
         normalized: list[dict[str, object]] = []
         for item in items:
             if isinstance(item, dict):
+                item_type = str(item.get("type", ""))
+                if item_type and item_type not in {"function_call", "reasoning"}:
+                    warnings.append(f"unsupported_response_item_type:{item_type}")
                 normalized.append(item)
                 continue
 
@@ -405,10 +486,91 @@ class SkillLanguageModel:
                 if summary is not None:
                     item_dict["summary"] = summary
                 normalized.append(item_dict)
+                continue
+            if item_type:
+                warnings.append(f"unsupported_response_item_type:{item_type}")
 
-        return normalized
+        return normalized, warnings
 
     def _serialize_tool_output(self, output: object) -> str:
         if isinstance(output, str):
             return output
         return json.dumps(output, default=str)
+
+    def _serialize_response_for_logging(self, response: object) -> str:
+        if isinstance(response, dict):
+            return json.dumps(response, default=str)
+        dump_method = getattr(response, "model_dump", None)
+        if callable(dump_method):
+            try:
+                dumped = dump_method()
+                if isinstance(dumped, dict):
+                    return json.dumps(dumped, default=str)
+            except Exception:
+                return repr(response)
+        return repr(response)
+
+    def _resolve_request_tools(
+        self,
+        *,
+        tools: list[dict[str, object]],
+        provider_skill_bundles: list[ProviderSkillBundle] | None,
+    ) -> list[dict[str, object]]:
+        if (
+            not self._use_provider_native_skills
+            or not provider_skill_bundles
+        ):
+            return list(tools)
+        if self._native_skill_environment != "local":
+            logger.warning(
+                "OpenAI native skill environment '%s' is not supported in this "
+                "runtime yet; skipping provider skill attachment.",
+                self._native_skill_environment,
+            )
+            return list(tools)
+        shell_tool: dict[str, object] = {
+            "type": "shell",
+            "environment": {
+                "type": "local",
+                "skills": [
+                    {
+                        "name": bundle.name,
+                        "description": bundle.description,
+                        "path": bundle.path,
+                    }
+                    for bundle in provider_skill_bundles
+                ],
+            },
+        }
+        return [shell_tool, *tools]
+
+    @staticmethod
+    def _should_fallback_to_http(err: openai.OpenAIError) -> bool:
+        message = str(err).lower()
+        return "unknown parameter" in message or "invalid type" in message
+
+    async def _call_responses_create_http_fallback(self, **kwargs: object) -> object:
+        api_key = getattr(self._client, "api_key", None)
+        if not isinstance(api_key, str) or not api_key:
+            raise SkillLanguageModelError(
+                "OpenAI HTTP fallback requires client.api_key to be set."
+            )
+        base_url_raw = getattr(self._client, "base_url", "https://api.openai.com/v1/")
+        base_url = str(base_url_raw).rstrip("/") + "/"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=120.0) as client:
+                response = await client.post(
+                    "responses",
+                    headers=headers,
+                    json=kwargs,
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPError as err:
+            raise SkillLanguageModelError(
+                "OpenAI HTTP fallback /responses request failed."
+            ) from err

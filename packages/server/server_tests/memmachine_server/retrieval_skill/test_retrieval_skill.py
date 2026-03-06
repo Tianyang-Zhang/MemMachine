@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
+from memmachine_server.common.configuration.retrieval_config import (
+    RetrievalAgentConf,
+    RetrievalSkillSessionProvider,
+)
 from memmachine_server.common.episode_store import Episode, EpisodeResponse
 from memmachine_server.common.language_model.language_model import LanguageModel
 from memmachine_server.common.reranker.reranker import Reranker
@@ -242,3 +247,35 @@ def test_service_locator_ignores_legacy_skill_routes() -> None:
             skill_session_model=session_model,
         )
         assert skill.skill_name == "RetrieveSkill"
+
+
+def test_service_locator_uses_provider_factory_from_retrieval_conf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = DummyLanguageModel("MemMachineSkill")
+    reranker = DummyReranker()
+    session_model = ScriptedSkillSessionModel(model)
+    factory = MagicMock(return_value=session_model)
+    monkeypatch.setattr(
+        "memmachine_server.retrieval_skill.service_locator.create_skill_session_model",
+        factory,
+    )
+    conf = RetrievalAgentConf(
+        skill_session_provider=RetrievalSkillSessionProvider.ANTHROPIC,
+        anthropic_api_key="anthropic-key",
+        skill_session_timeout_seconds=180,
+        skill_session_max_combined_calls=10,
+        skill_use_provider_native_skills=True,
+    )
+
+    skill = create_retrieval_skill(
+        model=model,
+        reranker=reranker,
+        retrieval_conf=conf,
+    )
+
+    assert skill.skill_name == "RetrieveSkill"
+    factory.assert_called_once_with(model=model, retrieval_conf=conf)
+    assert skill._global_timeout_seconds == 180
+    assert skill._max_combined_calls == 10
+    assert skill._use_provider_native_skills is True

@@ -7,6 +7,7 @@ import openai
 import pytest
 
 from memmachine_server.common.language_model import (
+    ProviderSkillBundle,
     SkillLanguageModel,
     SkillOpenAISessionLanguageModelParams,
     SkillSessionLimitError,
@@ -218,3 +219,54 @@ async def test_openai_live_session_respects_max_turns(
             tool_registry={"lookup": lookup},
             max_turns=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_openai_live_session_attaches_local_skills_when_enabled(
+    mock_async_openai_client: Any,
+    tmp_path,
+) -> None:
+    skill_dir = tmp_path / "retrieve-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# retrieve skill", encoding="utf-8")
+    mock_async_openai_client.responses.create.return_value = {
+        "id": "resp_1",
+        "output_text": "done",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+        "output": [],
+    }
+
+    model = SkillLanguageModel(
+        SkillOpenAISessionLanguageModelParams(
+            client=mock_async_openai_client,
+            model="gpt-5",
+            use_provider_native_skills=True,
+        )
+    )
+    bundles = [
+        ProviderSkillBundle(
+            name="retrieve-skill",
+            description="Retrieve skill bundle",
+            path=str(skill_dir),
+        )
+    ]
+
+    _ = await model.run_live_session(
+        system_prompt="sys",
+        user_prompt="hello",
+        tools=[
+            {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+        ],
+        tool_registry={},
+        provider_skill_bundles=bundles,
+    )
+
+    first_call = mock_async_openai_client.responses.create.await_args_list[0]
+    request_tools = first_call.kwargs["tools"]
+    assert request_tools[0]["type"] == "shell"
+    environment = request_tools[0]["environment"]
+    assert environment["type"] == "local"
+    skills = environment["skills"]
+    assert len(skills) == 1
+    assert skills[0]["name"] == "retrieve-skill"
+    assert skills[0]["path"] == str(skill_dir)

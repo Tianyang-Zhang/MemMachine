@@ -347,3 +347,32 @@ async def test_split_branch_failure_triggers_fallback(
 
     assert [item.uid for item in episodes] == ["split-fallback"]
     assert metrics["fallback_trigger_reason"] == "sub_skill_exception"
+
+
+@pytest.mark.asyncio
+async def test_combined_call_budget_exceeded_triggers_fallback(
+    query_policy: QueryPolicy,
+) -> None:
+    fallback_episode = _build_episode("budget-fallback", "budget-fallback")
+    memory = FakeEpisodicMemory({"hello": [fallback_episode]})
+    model = PolicyLanguageModel(
+        outputs=[
+            (
+                "top-level",
+                [
+                    _spawn_direct_memory_call("hello"),
+                    _return_final_call(),
+                ],
+            ),
+        ],
+    )
+
+    skill = _build_skill(model, max_combined_calls=1)
+    episodes, metrics = await skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert [item.uid for item in episodes] == ["budget-fallback"]
+    assert metrics["fallback_trigger_reason"] == "session_call_budget_exceeded"
+    assert metrics["session_call_budget_limit"] == 1

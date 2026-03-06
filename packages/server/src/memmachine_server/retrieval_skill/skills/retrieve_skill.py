@@ -14,12 +14,14 @@ from typing import Any, cast
 from memmachine_server.common.episode_store import Episode
 from memmachine_server.common.episode_store.episode_model import episodes_to_string
 from memmachine_server.common.language_model import (
+    ProviderSkillBundle,
     SkillLanguageModel,
     SkillLanguageModelError,
     SkillSessionLimitError,
     SkillSessionModelProtocol,
     SkillToolCallFormatError,
     SkillToolNotFoundError,
+    materialize_provider_skill_bundle,
 )
 from memmachine_server.retrieval_skill.common.skill_api import (
     QueryParam,
@@ -79,6 +81,7 @@ class RetrieveSkill(SkillToolBase):
         self._global_timeout_seconds = int(
             self._extra_params.get("global_timeout_seconds", self._spec.timeout_seconds)
         )
+        self._max_combined_calls = int(self._extra_params.get("max_combined_calls", 10))
         self._sub_skill_timeout_seconds = int(
             self._extra_params.get("sub_skill_timeout_seconds", 120)
         )
@@ -88,6 +91,12 @@ class RetrieveSkill(SkillToolBase):
         )
         self._sub_skill_episode_line_cap = int(
             self._extra_params.get("sub_skill_episode_line_cap", 120)
+        )
+        self._use_provider_native_skills = bool(
+            self._extra_params.get("use_provider_native_skills", False)
+        )
+        self._native_skill_bundle_root = self._extra_params.get(
+            "native_skill_bundle_root"
         )
         raw_stage_threshold = self._extra_params.get(
             "stage_result_confidence_threshold",
@@ -137,6 +146,8 @@ class RetrieveSkill(SkillToolBase):
             spec_root=sub_skill_root,
             split_parallel_cap=self._split_parallel_cap,
             split_branch_retry_limit=self._split_branch_retry_limit,
+            use_provider_native_skills=self._use_provider_native_skills,
+            native_skill_bundle_root=self._native_skill_bundle_root,
         )
 
     @property
@@ -167,6 +178,22 @@ class RetrieveSkill(SkillToolBase):
             if tool.skill_name == tool_name:
                 return tool
         return None
+
+    def _native_top_level_skill_bundles(self) -> list[ProviderSkillBundle] | None:
+        if not self._use_provider_native_skills:
+            return None
+        markdown = self._spec.policy_markdown or self._spec.description
+        bundle = materialize_provider_skill_bundle(
+            name=self._spec.name,
+            description=self._spec.description,
+            skill_markdown=markdown,
+            bundle_root=(
+                str(self._native_skill_bundle_root)
+                if self._native_skill_bundle_root is not None
+                else None
+            ),
+        )
+        return [bundle]
 
     def _new_session_state(self, query: QueryParam) -> TopLevelSkillSessionState:
         session = TopLevelSkillSessionState.new(
@@ -801,11 +828,31 @@ class RetrieveSkill(SkillToolBase):
         guardrail_retry_count = 0
         hop_count = 0
         branch_count = 0
+        combined_call_count = 0
         global_started = time.monotonic()
+        aggregated_metrics["session_call_budget_limit"] = self._max_combined_calls
+        aggregated_metrics["session_call_budget_consumed"] = 0
 
         def _global_timeout_exceeded() -> bool:
             elapsed = time.monotonic() - global_started
             return elapsed > float(self._global_timeout_seconds)
+
+        def _consume_call_budget(*, delta: int, source: str) -> None:
+            nonlocal combined_call_count
+            if delta <= 0:
+                return
+            next_count = combined_call_count + delta
+            if next_count > self._max_combined_calls:
+                self._raise_contract_error(
+                    why=(
+                        "Combined sub-skill/tool call budget exceeded: "
+                        f"next={next_count} > limit={self._max_combined_calls}; "
+                        f"source={source}."
+                    ),
+                    fallback_reason="session_call_budget_exceeded",
+                )
+            combined_call_count = next_count
+            aggregated_metrics["session_call_budget_consumed"] = combined_call_count
 
         try:
             _ = build_skill_request(query, route_name=route_name)
@@ -848,6 +895,7 @@ class RetrieveSkill(SkillToolBase):
                         fallback_reason="invalid_tool_call",
                     )
 
+                _consume_call_budget(delta=1, source="spawn_sub_skill")
                 hop_count += 1
                 branch_count += 1
                 if hop_count > self._max_hops:
@@ -865,6 +913,17 @@ class RetrieveSkill(SkillToolBase):
                     )
 
                 sub_query = action.query or query.query
+                remaining_sub_skill_tool_budget = (
+                    self._max_combined_calls - combined_call_count
+                )
+                if remaining_sub_skill_tool_budget <= 0:
+                    self._raise_contract_error(
+                        why=(
+                            "Combined sub-skill/tool call budget exhausted "
+                            "before sub-skill execution."
+                        ),
+                        fallback_reason="session_call_budget_exceeded",
+                    )
 
                 async def _run_sub_skill_once() -> SubSkillExecutionResult:
                     nonlocal guardrail_retry_count
@@ -876,6 +935,7 @@ class RetrieveSkill(SkillToolBase):
                                     skill_name=action.skill_name,
                                     policy=policy,
                                     query=self._query_with_override(query, sub_query),
+                                    max_tool_calls=remaining_sub_skill_tool_budget,
                                 ),
                                 timeout=float(self._sub_skill_timeout_seconds),
                             )
@@ -935,6 +995,10 @@ class RetrieveSkill(SkillToolBase):
                     aggregated_metrics,
                 )
                 session.merge_episodes(sub_result.episodes)
+                _consume_call_budget(
+                    delta=len(sub_result.tool_calls),
+                    source=f"sub_skill:{sub_result.skill_name}",
+                )
 
                 if sub_result.branch_total > 0:
                     self._record_branch_metrics(
@@ -979,6 +1043,7 @@ class RetrieveSkill(SkillToolBase):
                     branch_success_count=sub_result.branch_success_count,
                     branch_failure_count=sub_result.branch_failure_count,
                     branch_retry_count=sub_result.branch_retry_count,
+                    normalization_warnings=sub_result.normalization_warnings,
                 )
                 episode_lines = [
                     line
@@ -1042,6 +1107,7 @@ class RetrieveSkill(SkillToolBase):
                     tool_name="direct_memory_search",
                     arguments=arguments,
                 )
+                _consume_call_budget(delta=1, source="direct_memory_search")
                 if action.action not in allowed_tools:
                     self._raise_contract_error(
                         why=(
@@ -1096,6 +1162,7 @@ class RetrieveSkill(SkillToolBase):
                     tool_name="return_final",
                     arguments=arguments,
                 )
+                _consume_call_budget(delta=1, source="return_final")
                 if action.action not in allowed_tools:
                     self._raise_contract_error(
                         why=(
@@ -1273,7 +1340,12 @@ class RetrieveSkill(SkillToolBase):
                 tool_registry["return_final"] = _execute_return_final
 
             session_result = await self._session_model.run_live_session(
-                system_prompt=self._spec.policy_markdown or self._spec.description,
+                system_prompt=(
+                    "Use the attached retrieval skill and available tools to complete "
+                    "the user request."
+                    if self._use_provider_native_skills
+                    else (self._spec.policy_markdown or self._spec.description)
+                ),
                 user_prompt=(
                     f"query: {query.query}\n"
                     f"available_sub_skills: {', '.join(self._available_sub_skills)}\n"
@@ -1284,6 +1356,7 @@ class RetrieveSkill(SkillToolBase):
                 tool_registry=tool_registry,
                 max_turns=self._spec.max_steps,
                 timeout_seconds=float(self._global_timeout_seconds),
+                provider_skill_bundles=self._native_top_level_skill_bundles(),
             )
             aggregated_metrics["llm_time"] = float(
                 aggregated_metrics.get("llm_time", 0.0)
@@ -1299,6 +1372,10 @@ class RetrieveSkill(SkillToolBase):
                 },
                 aggregated_metrics,
             )
+            if session_result.normalization_warnings:
+                aggregated_metrics["top_level_normalization_warnings"] = list(
+                    session_result.normalization_warnings
+                )
 
             if not session.completed:
                 if not session.tool_calls:

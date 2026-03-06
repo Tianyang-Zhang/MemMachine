@@ -29,17 +29,17 @@ configuration switch, while preserving multi-turn tool-calling reliability.
 
 ### Active
 
-- [ ] Add Anthropic live-session language model runtime compatible with current
+- [x] Add Anthropic live-session language model runtime compatible with current
       retrieval skill session interface
-- [ ] Introduce provider selection for skill-session execution based on
+- [x] Introduce provider selection for skill-session execution based on
       MemMachine config (OpenAI vs Anthropic)
-- [ ] Route both top-level retrieval skill and sub-skill execution through the
+- [x] Route both top-level retrieval skill and sub-skill execution through the
       selected provider runtime in multi-turn mode
-- [ ] Preserve tool-calling behavior for retrieval tools (especially
+- [x] Preserve tool-calling behavior for retrieval tools (especially
       `memmachine_search`) with deterministic result plumbing
-- [ ] Keep compatibility with current OpenAI behavior and add provider-specific
+- [x] Keep compatibility with current OpenAI behavior and add provider-specific
       tests for session chaining and tool execution
-- [ ] Expose clear configuration and failure telemetry for provider-specific
+- [x] Expose clear configuration and failure telemetry for provider-specific
       runtime errors
 
 ### Out of Scope
@@ -77,9 +77,9 @@ without regressing fallback behavior, metrics, or existing tests.
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Use provider-specific session adapters behind one protocol | Minimizes churn in retrieval skill code and enables config-based routing | — Pending |
-| Keep multi-turn stateful sessions as first-class runtime behavior | Retrieval skills depend on iterative tool calls and session continuity | — Pending |
-| Preserve existing skill spec artifacts and focus refactor on runtime plumbing | Limits risk and keeps scope aligned with API runtime migration | — Pending |
+| Use provider-specific session adapters behind one protocol | Minimizes churn in retrieval skill code and enables config-based routing | Implemented via `SkillSessionModelProtocol` and `create_skill_session_model(...)` |
+| Keep multi-turn stateful sessions as first-class runtime behavior | Retrieval skills depend on iterative tool calls and session continuity | Implemented for both OpenAI and Anthropic session runtimes |
+| Preserve existing skill spec artifacts and focus refactor on runtime plumbing | Limits risk and keeps scope aligned with API runtime migration | Implemented; no markdown spec rewrite required |
 
 ---
-*Last updated: 2026-03-06 after initialization*
+*Last updated: 2026-03-06 after phase execution completion*
