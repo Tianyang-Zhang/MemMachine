@@ -14,8 +14,9 @@ preserving existing retrieval behavior, guardrails, and evaluation quality.
 
 - [ ] **Phase 1: Session Adapter Foundations** - Establish provider-agnostic
       session boundaries and config-driven selection.
-- [ ] **Phase 2: Anthropic Runtime Implementation** - Add Anthropic multi-turn
-      session adapter compatible with retrieval tool loops.
+- [ ] **Phase 2: OpenAI + Anthropic Runtime Implementation** - Harden OpenAI
+      runtime against the shared contract and add Anthropic multi-turn session
+      adapter compatible with retrieval tool loops.
 - [ ] **Phase 3: Retrieval Integration** - Route top-level and sub-skill
       orchestration through selected provider runtime.
 - [ ] **Phase 4: Guardrails and Fallback Parity** - Align error handling,
@@ -41,20 +42,26 @@ Plans:
 - [ ] 01-02: Implement provider selection factory and config wiring
 - [ ] 01-03: Add baseline tests for contract and metric normalization hooks
 
-### Phase 2: Anthropic Runtime Implementation
-**Goal**: Implement Anthropic live-session adapter with tool-call continuation.
+### Phase 2: OpenAI + Anthropic Runtime Implementation
+**Goal**: Lock OpenAI to the strict shared contract and implement Anthropic
+live-session adapter with tool-call continuation.
 **Depends on**: Phase 1
 **Requirements**: ANTH-01, ANTH-02, ANTH-03, ANTH-04
 **Success Criteria** (what must be TRUE):
-1. Anthropic adapter can run multi-turn sessions until completion.
-2. Anthropic tool calls are parsed/validated into expected internal shape.
-3. Anthropic errors are surfaced via typed runtime/fallback pathways.
+1. OpenAI adapter behavior is explicitly validated against the strict shared
+   session contract.
+2. Anthropic adapter can run multi-turn sessions until completion.
+3. Anthropic tool calls are parsed/validated into expected internal shape.
+4. Anthropic errors are surfaced via typed runtime/fallback pathways.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: Add `skill_anthropic_session_language_model.py` core runtime
-- [ ] 02-02: Implement tool-call parsing and function_call_output mapping
-- [ ] 02-03: Add Anthropic-focused runtime unit tests (happy path + errors)
+- [ ] 02-01: Refactor/confirm OpenAI session runtime contract parity and strict
+      normalization behavior
+- [ ] 02-02: Add `skill_anthropic_session_language_model.py` core runtime and
+      tool-call continuation loop
+- [ ] 02-03: Add OpenAI+Anthropic runtime parity tests (happy path, limits,
+      malformed payloads)
 
 ### Phase 3: Retrieval Integration
 **Goal**: Integrate selected provider runtime into retrieval orchestrators.
@@ -110,7 +117,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Session Adapter Foundations | 0/3 | Not started | - |
-| 2. Anthropic Runtime Implementation | 0/3 | Not started | - |
+| 2. OpenAI + Anthropic Runtime Implementation | 0/3 | Not started | - |
 | 3. Retrieval Integration | 0/3 | Not started | - |
 | 4. Guardrails and Fallback Parity | 0/3 | Not started | - |
 | 5. Validation and Benchmarking | 0/3 | Not started | - |
