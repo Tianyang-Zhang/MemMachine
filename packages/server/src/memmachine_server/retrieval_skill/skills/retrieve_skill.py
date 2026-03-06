@@ -92,9 +92,6 @@ class RetrieveSkill(SkillToolBase):
         self._sub_skill_episode_line_cap = int(
             self._extra_params.get("sub_skill_episode_line_cap", 120)
         )
-        self._use_provider_native_skills = bool(
-            self._extra_params.get("use_provider_native_skills", False)
-        )
         self._native_skill_bundle_root = self._extra_params.get(
             "native_skill_bundle_root"
         )
@@ -108,12 +105,16 @@ class RetrieveSkill(SkillToolBase):
             self._stage_result_confidence_threshold = float(raw_stage_threshold)
         else:
             self._stage_result_confidence_threshold = 0.9
-        self._available_sub_skills = list(
-            self._extra_params.get(
-                "available_sub_skills",
-                ["direct_memory", "coq", "split"],
-            )
+        raw_available_sub_skills = list(
+            self._extra_params.get("available_sub_skills", ["coq", "split"])
         )
+        self._available_sub_skills = [
+            skill_name
+            for skill_name in raw_available_sub_skills
+            if self._normalize_sub_skill_name(skill_name) in {"coq", "split"}
+        ]
+        if not self._available_sub_skills:
+            self._available_sub_skills = ["coq", "split"]
         fallback_name = self._extra_params.get("fallback_tool_name", "MemMachineSkill")
         self._memory_tool = self._find_child_tool(fallback_name)
         if self._memory_tool is None:
@@ -146,7 +147,6 @@ class RetrieveSkill(SkillToolBase):
             spec_root=sub_skill_root,
             split_parallel_cap=self._split_parallel_cap,
             split_branch_retry_limit=self._split_branch_retry_limit,
-            use_provider_native_skills=self._use_provider_native_skills,
             native_skill_bundle_root=self._native_skill_bundle_root,
         )
 
@@ -179,9 +179,11 @@ class RetrieveSkill(SkillToolBase):
                 return tool
         return None
 
-    def _native_top_level_skill_bundles(self) -> list[ProviderSkillBundle] | None:
-        if not self._use_provider_native_skills:
-            return None
+    @staticmethod
+    def _normalize_sub_skill_name(skill_name: str) -> str:
+        return skill_name.strip().replace("-", "_").lower()
+
+    def _native_top_level_skill_bundles(self) -> list[ProviderSkillBundle]:
         markdown = self._spec.policy_markdown or self._spec.description
         bundle = materialize_provider_skill_bundle(
             name=self._spec.name,
@@ -886,7 +888,28 @@ class RetrieveSkill(SkillToolBase):
                         why="spawn_sub_skill requires skill_name.",
                         fallback_reason="invalid_tool_call",
                     )
-                if action.skill_name not in self._available_sub_skills:
+                normalized_skill_name = self._normalize_sub_skill_name(
+                    action.skill_name
+                )
+                if normalized_skill_name == "direct_memory":
+                    session.record_event(
+                        actor="top-level",
+                        event_type="direct_memory_routed_as_tool",
+                        detail=(
+                            "spawn_sub_skill(skill_name=direct_memory) mapped to "
+                            "direct_memory_search tool execution."
+                        ),
+                    )
+                    return await _execute_direct_memory_search(
+                        {
+                            "query": action.query or query.query,
+                            "rationale": action.rationale,
+                        }
+                    )
+                if normalized_skill_name not in {
+                    self._normalize_sub_skill_name(skill_name)
+                    for skill_name in self._available_sub_skills
+                }:
                     self._raise_contract_error(
                         why=(
                             "spawn_sub_skill skill_name not allowed: "
@@ -1343,8 +1366,6 @@ class RetrieveSkill(SkillToolBase):
                 system_prompt=(
                     "Use the attached retrieval skill and available tools to complete "
                     "the user request."
-                    if self._use_provider_native_skills
-                    else (self._spec.policy_markdown or self._spec.description)
                 ),
                 user_prompt=(
                     f"query: {query.query}\n"

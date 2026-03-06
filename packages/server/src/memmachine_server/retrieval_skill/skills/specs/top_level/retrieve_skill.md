@@ -33,9 +33,9 @@ searches.
 
 1. Maintain one global orchestrator state through completion.
 2. Route-selection ownership is top-level policy:
-   - Choose one initial execution skill directly:
-     `direct_memory`, `coq`, or `split`.
-   - Do not spawn `tool_select` as a sub-skill.
+   - Choose one initial execution action directly:
+     `direct_memory_search`, `spawn_sub_skill(skill_name=coq)`, or
+     `spawn_sub_skill(skill_name=split)`.
    - Perform an internal selector decision before first retrieval action with
      this shape:
      `selected_skill`, `selected_route`, `confidence_score`, `reason_code`,
@@ -160,7 +160,8 @@ searches.
    - Use `coq` for sequential multi-hop decomposition.
    - Use `split` for branch decomposition.
    - After `split` emits branch queries, top-level must choose each branch
-     execution skill directly (`coq` or `direct_memory`).
+     execution action directly (`spawn_sub_skill(skill_name=coq)` or
+     `direct_memory_search`).
    - Treat `split` as planner-only: use `sub_queries` for branch planning; do
      not treat split summaries as stage-result evidence.
    - Do not recurse `split` for split-branch execution.
@@ -225,12 +226,13 @@ searches.
 
 Use only these actions:
 
-- `spawn_sub_skill`: run one named sub-skill with query context.
+- `spawn_sub_skill`: run one named decomposition sub-skill (`coq` or `split`).
 - `direct_memory_search`: run top-level MemMachine search.
 - `return_final`: finish with final response rationale and sufficiency fields.
 
 Preferred first action: choose one of `direct_memory`, `coq`, or `split`
-directly from query text and current state.
+directly from query text and current state, where direct-memory route must use
+`direct_memory_search` (not `spawn_sub_skill`).
 Valid decomposition sub-skills: `coq`, `split`.
 
 ### return_final Payload Guidance

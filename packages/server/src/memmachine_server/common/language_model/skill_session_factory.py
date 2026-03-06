@@ -43,9 +43,6 @@ def create_skill_session_model(
                 max_retry_interval_seconds=model.max_retry_interval_seconds,
                 reasoning_effort=model.reasoning_effort,
                 log_raw_output=retrieval_conf.skill_session_log_raw_output,
-                use_provider_native_skills=(
-                    retrieval_conf.skill_use_provider_native_skills
-                ),
                 native_skill_environment=retrieval_conf.openai_native_skill_environment,
             )
         )
@@ -72,9 +69,6 @@ def create_skill_session_model(
                 ),
                 max_output_tokens=retrieval_conf.anthropic_max_output_tokens,
                 log_raw_output=retrieval_conf.skill_session_log_raw_output,
-                use_provider_native_skills=(
-                    retrieval_conf.skill_use_provider_native_skills
-                ),
             )
         )
 

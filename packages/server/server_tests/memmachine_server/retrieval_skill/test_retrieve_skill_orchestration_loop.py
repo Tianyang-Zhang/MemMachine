@@ -239,17 +239,6 @@ async def test_spawn_sub_skill_memory_search_and_state_tracking(
                     },
                 ],
             ),
-            (
-                "sub-skill complete",
-                [
-                    {
-                        "function": {
-                            "name": "memmachine_search",
-                            "arguments": {"query": "branch query"},
-                        }
-                    }
-                ],
-            ),
         ]
     )
     retrieve_skill = _build_skill(model)
@@ -260,24 +249,17 @@ async def test_spawn_sub_skill_memory_search_and_state_tracking(
     )
 
     assert [item.uid for item in episodes] == ["ep-sub", "ep-top"]
-    assert metrics["orchestrator_sub_skill_count"] == 1
+    assert metrics["orchestrator_sub_skill_count"] == 0
     sub_skill_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_skill_runs, list)
-    assert sub_skill_runs[0]["skill_name"] == "direct_memory"
-    assert sub_skill_runs[0]["query"] == "branch query"
-    assert sub_skill_runs[0]["episodes_returned"] == 1
-    memmachine_call = sub_skill_runs[0]["tool_calls"][0]
-    assert memmachine_call["tool_name"] == "memmachine_search"
-    episode_lines = memmachine_call["arguments"]["episodes_human_readable"]
-    assert isinstance(episode_lines, list)
-    assert len(episode_lines) == 1
-    assert "unit-test" in episode_lines[0]
-    assert "sub evidence" in episode_lines[0]
-    raw_result = memmachine_call["raw_result"]
-    assert raw_result["episodes_returned"] == 1
-    assert raw_result["query"] == "branch query"
-    assert raw_result["cached"] is False
-    assert "episodes_human_readable" not in raw_result
+    assert sub_skill_runs == []
+    trace = metrics["orchestrator_trace"]
+    assert isinstance(trace, dict)
+    calls = trace["tool_calls"]
+    assert calls[0]["tool_name"] == "direct_memory_search"
+    assert calls[0]["arguments"]["query"] == "branch query"
+    assert calls[1]["tool_name"] == "direct_memory_search"
+    assert calls[1]["arguments"]["query"] == "hello"
     assert metrics["memory_search_called"] == 2
     assert float(metrics["memory_retrieval_time"]) > 0.0
     assert metrics["top_level_session_invocation_count"] == 1
@@ -548,17 +530,6 @@ async def test_top_level_routes_split_branches_and_applies_final_rerank(
                 ],
             ),
             (
-                "branch direct",
-                [
-                    {
-                        "function": {
-                            "name": "memmachine_search",
-                            "arguments": {"query": "branch direct"},
-                        }
-                    }
-                ],
-            ),
-            (
                 "coq branch",
                 [
                     {
@@ -607,7 +578,6 @@ async def test_top_level_routes_split_branches_and_applies_final_rerank(
     assert "sub_queries" in split_summary_calls[0]["arguments"]["summary"]
     assert [run["skill_name"] for run in sub_skill_runs] == [
         "split",
-        "direct_memory",
         "coq",
     ]
 
@@ -723,11 +693,7 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
     assert branch_b_query in memory.queries
     sub_skill_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_skill_runs, list)
-    assert [run["skill_name"] for run in sub_skill_runs] == [
-        "split",
-        "direct_memory",
-        "direct_memory",
-    ]
+    assert [run["skill_name"] for run in sub_skill_runs] == ["split"]
 
 
 @pytest.mark.asyncio
@@ -898,11 +864,7 @@ async def test_top_level_can_issue_follow_up_branch_after_split(
     split_run = sub_runs[0]
     assert split_run["skill_name"] == "split"
     assert split_run["branch_total"] == 0
-    assert [run["skill_name"] for run in sub_runs] == [
-        "split",
-        "direct_memory",
-        "direct_memory",
-    ]
+    assert [run["skill_name"] for run in sub_runs] == ["split"]
 
 
 @pytest.mark.asyncio
@@ -1102,7 +1064,7 @@ async def test_llm_time_accumulates_top_level_and_sub_skill_sessions(
                         "function": {
                             "name": "spawn_sub_skill",
                             "arguments": {
-                                "skill_name": "direct_memory",
+                                "skill_name": "coq",
                                 "query": "branch query",
                             },
                         }

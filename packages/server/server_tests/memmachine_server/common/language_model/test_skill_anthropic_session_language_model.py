@@ -201,7 +201,6 @@ async def test_anthropic_live_session_attaches_container_skills_when_enabled(
         SkillAnthropicSessionLanguageModelParams(
             client=client,
             model="claude-sonnet-4-5",
-            use_provider_native_skills=True,
         )
     )
 

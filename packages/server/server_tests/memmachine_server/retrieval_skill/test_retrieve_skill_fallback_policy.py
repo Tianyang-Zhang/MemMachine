@@ -162,12 +162,12 @@ def _build_skill(model: LanguageModel, **extra_params: object) -> RetrieveSkill:
     )
 
 
-def _spawn_direct_memory_call(query: str = "hello") -> dict[str, Any]:
+def _spawn_coq_call(query: str = "hello") -> dict[str, Any]:
     return {
         "function": {
             "name": "spawn_sub_skill",
             "arguments": {
-                "skill_name": "direct_memory",
+                "skill_name": "coq",
                 "query": query,
                 "rationale": "branch",
             },
@@ -205,8 +205,8 @@ async def test_sub_skill_timeout_retries_once_then_fallback(
     memory = FakeEpisodicMemory({"hello": [fallback_episode]})
     model = PolicyLanguageModel(
         outputs=[
-            ("attempt-1", [_spawn_direct_memory_call("hello"), _return_final_call()]),
-            ("attempt-2", [_spawn_direct_memory_call("hello"), _return_final_call()]),
+            ("attempt-1", [_spawn_coq_call("hello"), _return_final_call()]),
+            ("attempt-2", [_spawn_coq_call("hello"), _return_final_call()]),
         ],
         sub_skill_delay_seconds=0.01,
     )
@@ -274,11 +274,11 @@ async def test_fallback_preserves_partial_evidence_before_timeout(
                             "arguments": {"query": "hello"},
                         }
                     },
-                    _spawn_direct_memory_call("hello"),
+                    _spawn_coq_call("hello"),
                     _return_final_call(),
                 ],
             ),
-            ("attempt-2", [_spawn_direct_memory_call("hello"), _return_final_call()]),
+            ("attempt-2", [_spawn_coq_call("hello"), _return_final_call()]),
         ],
         sub_skill_delay_seconds=0.01,
     )
@@ -360,7 +360,7 @@ async def test_combined_call_budget_exceeded_triggers_fallback(
             (
                 "top-level",
                 [
-                    _spawn_direct_memory_call("hello"),
+                    _spawn_coq_call("hello"),
                     _return_final_call(),
                 ],
             ),

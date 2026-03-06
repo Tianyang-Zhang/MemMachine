@@ -97,7 +97,8 @@ entity/timeframe/context.
 ### 7. Top-level-owned branch execution
 
 - Split returns branch-plan output only.
-- Top-level skill decides branch routing/execution (`coq` or `direct_memory`).
+- Top-level skill decides branch routing/execution (`coq` or direct memory via
+  `direct_memory_search`).
 - Split must not assume branch execution happened.
 
 ## Tools

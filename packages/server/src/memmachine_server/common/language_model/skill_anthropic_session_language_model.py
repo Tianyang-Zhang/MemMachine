@@ -39,7 +39,6 @@ class SkillAnthropicSessionLanguageModelParams(BaseModel):
     max_output_tokens: int = Field(default=2048, gt=0)
     temperature: float | None = None
     log_raw_output: bool = False
-    use_provider_native_skills: bool = False
 
     @field_validator("client")
     @classmethod
@@ -64,7 +63,6 @@ class SkillAnthropicSessionLanguageModel:
         self._max_output_tokens = params.max_output_tokens
         self._temperature = params.temperature
         self._log_raw_output = params.log_raw_output
-        self._use_provider_native_skills = params.use_provider_native_skills
         self._skill_id_cache: dict[str, str] = {}
 
     async def run_live_session(  # noqa: C901
@@ -97,7 +95,7 @@ class SkillAnthropicSessionLanguageModel:
         ]
         anthropic_tools = self._to_anthropic_tools(tools)
         native_skill_refs: list[dict[str, object]] = []
-        if self._use_provider_native_skills and provider_skill_bundles:
+        if provider_skill_bundles:
             native_skill_refs = await self._resolve_native_skill_refs(
                 provider_skill_bundles
             )

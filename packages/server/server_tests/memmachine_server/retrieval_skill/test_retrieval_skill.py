@@ -265,7 +265,6 @@ def test_service_locator_uses_provider_factory_from_retrieval_conf(
         anthropic_api_key="anthropic-key",
         skill_session_timeout_seconds=180,
         skill_session_max_combined_calls=10,
-        skill_use_provider_native_skills=True,
     )
 
     skill = create_retrieval_skill(
@@ -278,4 +277,4 @@ def test_service_locator_uses_provider_factory_from_retrieval_conf(
     factory.assert_called_once_with(model=model, retrieval_conf=conf)
     assert skill._global_timeout_seconds == 180
     assert skill._max_combined_calls == 10
-    assert skill._use_provider_native_skills is True
+    assert skill._available_sub_skills == ["coq", "split"]

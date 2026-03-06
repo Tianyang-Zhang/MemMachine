@@ -50,14 +50,6 @@ class RetrievalAgentConf(YamlSerializableMixin, WithValueFromEnv):
         default=True,
         description="Whether to emit full provider raw output payloads to debug logs.",
     )
-    skill_use_provider_native_skills: bool = Field(
-        default=False,
-        description=(
-            "Enable provider-native skill attachment APIs (OpenAI tools/skills and "
-            "Anthropic Agent Skills) instead of relying only on prompt-injected "
-            "skill markdown."
-        ),
-    )
     skill_native_bundle_root: str | None = Field(
         default=None,
         description=(
@@ -72,10 +64,7 @@ class RetrievalAgentConf(YamlSerializableMixin, WithValueFromEnv):
     )
     openai_native_skill_environment: Literal["local", "container_auto"] = Field(
         default="local",
-        description=(
-            "Shell environment type used when OpenAI provider-native skills are "
-            "enabled."
-        ),
+        description="Shell environment type used for OpenAI provider-native skills.",
     )
     anthropic_model: str = Field(
         default="claude-sonnet-4-5",

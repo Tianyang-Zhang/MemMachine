@@ -240,7 +240,6 @@ async def test_openai_live_session_attaches_local_skills_when_enabled(
         SkillOpenAISessionLanguageModelParams(
             client=mock_async_openai_client,
             model="gpt-5",
-            use_provider_native_skills=True,
         )
     )
     bundles = [

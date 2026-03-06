@@ -14,7 +14,6 @@ def test_retrieval_agent_conf_defaults() -> None:
     assert conf.skill_session_timeout_seconds == 180
     assert conf.skill_session_max_combined_calls == 10
     assert conf.skill_session_log_raw_output is True
-    assert conf.skill_use_provider_native_skills is False
     assert conf.openai_native_skill_environment == "local"
 
 

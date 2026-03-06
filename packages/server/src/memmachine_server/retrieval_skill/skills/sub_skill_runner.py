@@ -77,7 +77,6 @@ class SubSkillRunner:
         spec_root: Path | None = None,
         split_parallel_cap: int = 5,
         split_branch_retry_limit: int = 1,
-        use_provider_native_skills: bool = False,
         native_skill_bundle_root: str | None = None,
     ) -> None:
         """Initialize sub-skill runtime dependencies."""
@@ -92,7 +91,6 @@ class SubSkillRunner:
         )
         self._split_parallel_cap = max(1, split_parallel_cap)
         self._split_branch_retry_limit = max(0, split_branch_retry_limit)
-        self._use_provider_native_skills = use_provider_native_skills
         self._native_skill_bundle_root = native_skill_bundle_root
 
     @staticmethod
@@ -167,9 +165,7 @@ class SubSkillRunner:
         self,
         *,
         spec: SkillSpecV1,
-    ) -> list[ProviderSkillBundle] | None:
-        if not self._use_provider_native_skills:
-            return None
+    ) -> list[ProviderSkillBundle]:
         markdown = spec.policy_markdown or spec.description
         bundle = materialize_provider_skill_bundle(
             name=spec.name,
@@ -322,7 +318,6 @@ class SubSkillRunner:
         user_prompt: str | None = None,
         max_tool_calls: int | None = None,
     ) -> SubSkillExecutionResult:
-        prompt = spec.policy_markdown or spec.description
         bounded_max_steps = max(1, spec.max_steps)
         result = SubSkillExecutionResult(
             skill_name=skill_name,
@@ -429,8 +424,6 @@ class SubSkillRunner:
                 system_prompt=(
                     "Use the attached sub-skill and available tools to resolve "
                     "the user request."
-                    if self._use_provider_native_skills
-                    else prompt
                 ),
                 user_prompt=user_prompt or f"sub-skill query: {query.query}",
                 tools=sub_skill_tool_schemas(spec.allowed_tools),

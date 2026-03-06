@@ -72,7 +72,6 @@ class SkillOpenAISessionLanguageModelParams(BaseModel):
     max_retry_interval_seconds: int = Field(default=120, gt=0)
     reasoning_effort: str | None = None
     log_raw_output: bool = False
-    use_provider_native_skills: bool = False
     native_skill_environment: str = Field(default="local")
 
 
@@ -103,7 +102,6 @@ class SkillLanguageModel:
         self._max_retry_interval_seconds = params.max_retry_interval_seconds
         self._reasoning_effort = params.reasoning_effort
         self._log_raw_output = params.log_raw_output
-        self._use_provider_native_skills = params.use_provider_native_skills
         self._native_skill_environment = params.native_skill_environment
 
     @classmethod
@@ -112,7 +110,6 @@ class SkillLanguageModel:
         model: object,
         *,
         log_raw_output: bool = False,
-        use_provider_native_skills: bool = False,
         native_skill_environment: str = "local",
     ) -> SkillLanguageModel:
         """Build from existing OpenAIResponsesLanguageModel instance."""
@@ -130,7 +127,6 @@ class SkillLanguageModel:
                 max_retry_interval_seconds=model.max_retry_interval_seconds,
                 reasoning_effort=model.reasoning_effort,
                 log_raw_output=log_raw_output,
-                use_provider_native_skills=use_provider_native_skills,
                 native_skill_environment=native_skill_environment,
             )
         )
@@ -360,13 +356,13 @@ class SkillLanguageModel:
                     sleep_seconds * 2,
                     self._max_retry_interval_seconds,
                 )
-            except TypeError as err:
-                if self._use_provider_native_skills:
-                    return await self._call_responses_create_http_fallback(**kwargs)
-                raise SkillLanguageModelError(
-                    f"[call uuid: {call_uuid}] OpenAI responses.create failed "
-                    "with TypeError."
-                ) from err
+            except TypeError:
+                logger.warning(
+                    "[call uuid: %s] OpenAI responses.create TypeError; using HTTP "
+                    "fallback /responses.",
+                    call_uuid,
+                )
+                return await self._call_responses_create_http_fallback(**kwargs)
             except openai.OpenAIError as err:
                 if self._should_fallback_to_http(err):
                     return await self._call_responses_create_http_fallback(**kwargs)
@@ -516,10 +512,7 @@ class SkillLanguageModel:
         tools: list[dict[str, object]],
         provider_skill_bundles: list[ProviderSkillBundle] | None,
     ) -> list[dict[str, object]]:
-        if (
-            not self._use_provider_native_skills
-            or not provider_skill_bundles
-        ):
+        if not provider_skill_bundles:
             return list(tools)
         if self._native_skill_environment != "local":
             logger.warning(

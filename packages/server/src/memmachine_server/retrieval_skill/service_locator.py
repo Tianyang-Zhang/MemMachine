@@ -67,9 +67,6 @@ def create_retrieval_skill(
         retrieve_extra_params["max_combined_calls"] = (
             retrieval_conf.skill_session_max_combined_calls
         )
-        retrieve_extra_params["use_provider_native_skills"] = (
-            retrieval_conf.skill_use_provider_native_skills
-        )
         if retrieval_conf.skill_native_bundle_root:
             retrieve_extra_params["native_skill_bundle_root"] = (
                 retrieval_conf.skill_native_bundle_root
