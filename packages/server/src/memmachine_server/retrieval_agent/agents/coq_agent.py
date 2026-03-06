@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Iterable
@@ -220,13 +221,12 @@ class ChainOfQueryAgent(AgentToolBase):
         self,
         query: QueryParam,
         stage_results: list[dict[str, Any]],
-        sub_queries: list[str],
     ) -> list[Episode]:
         if len(stage_results) == 0:
             return []
 
         now = datetime.datetime.now(tz=datetime.UTC)
-        episodes: list[Episode] = []
+        content_lines: list[str] = []
         for idx, stage_item in enumerate(stage_results, start=1):
             stage_query = str(stage_item.get("query", "")).strip()
             stage_result = str(stage_item.get("stage_result", "")).strip()
@@ -238,35 +238,24 @@ class ChainOfQueryAgent(AgentToolBase):
             )
             if stage_query == "" or stage_result == "":
                 continue
-            episodes.append(
-                Episode(
-                    uid=f"retrieval-agent-stage-result-{uuid.uuid4()}",
-                    content=(
-                        f"[StageResult {idx}] Query: {stage_query}\n"
-                        f"Answer: {stage_result} (confidence={confidence_str})"
-                    ),
-                    session_key=query.memory.session_key,
-                    created_at=now + datetime.timedelta(seconds=len(episodes)),
-                    producer_id="retrieval-agent-stage-result",
-                    producer_role="assistant",
-                )
+            content_lines.extend(
+                [
+                    f"[SubQuery {idx}] {stage_query}",
+                    f"[StageResult {idx}] {stage_result} (confidence={confidence_str})",
+                ]
             )
-
-        for idx, sub_query in enumerate(sub_queries, start=1):
-            query_text = str(sub_query).strip()
-            if query_text == "":
-                continue
-            episodes.append(
-                Episode(
-                    uid=f"retrieval-agent-sub-query-{uuid.uuid4()}",
-                    content=f"[SubQuery {idx}] {query_text}",
-                    session_key=query.memory.session_key,
-                    created_at=now + datetime.timedelta(seconds=len(episodes)),
-                    producer_id="retrieval-agent-stage-result",
-                    producer_role="assistant",
-                )
+        if len(content_lines) == 0:
+            return []
+        return [
+            Episode(
+                uid=f"retrieval-agent-stage-result-{uuid.uuid4()}",
+                content="\n".join(content_lines),
+                session_key=query.memory.session_key,
+                created_at=now,
+                producer_id="retrieval-agent-stage-result",
+                producer_role="assistant",
             )
-        return episodes
+        ]
 
     def _filter_stage_results_for_output(
         self, stage_results: list[dict[str, Any]]
@@ -280,6 +269,13 @@ class ChainOfQueryAgent(AgentToolBase):
                 continue
             filtered.append(stage_item)
         return filtered
+
+    def _episode_content_key(self, episode: Episode) -> str:
+        producer = str(episode.producer_id).strip().lower()
+        content = self._normalize_query(str(episode.content))
+        # Keep dedupe stable even if stage/subquery numbering differs.
+        content = re.sub(r"\[(stageresult|subquery)\s+\d+\]", r"[\1]", content)
+        return f"{producer}|{content}"
 
     async def combined_check_and_rewrite(  # noqa: C901
         self,
@@ -546,13 +542,9 @@ class ChainOfQueryAgent(AgentToolBase):
         perf_metrics["sub_queries"] = list(all_sub_queries)
         perf_metrics["stage_results"] = list(all_stage_results)
         output_stage_results = self._filter_stage_results_for_output(all_stage_results)
-        output_sub_queries: list[str] = []
-        for stage_item in output_stage_results:
-            self._append_unique_sub_query(output_sub_queries, str(stage_item["query"]))
         stage_result_episodes = self._build_stage_result_episodes(
             query=query,
             stage_results=output_stage_results,
-            sub_queries=output_sub_queries,
         )
 
         if (
@@ -572,12 +564,17 @@ class ChainOfQueryAgent(AgentToolBase):
         if len(stage_result_episodes) > 0:
             perf_metrics["stage_result_memory_returned"] = True
             perf_metrics["returned_stage_result_count"] = len(stage_result_episodes)
-            merged_episodes: list[Episode] = []
-            seen_uids: set[str] = set()
-            for episode in [*stage_result_episodes, *final_episodes]:
-                if episode.uid in seen_uids:
+            merged_episodes: list[Episode] = list(stage_result_episodes)
+            seen_keys = {
+                self._episode_content_key(episode) for episode in stage_result_episodes
+            }
+            for episode in final_episodes:
+                if episode.producer_id == "retrieval-agent-stage-result":
                     continue
-                seen_uids.add(episode.uid)
+                episode_key = self._episode_content_key(episode)
+                if episode_key in seen_keys:
+                    continue
+                seen_keys.add(episode_key)
                 merged_episodes.append(episode)
             return merged_episodes, perf_metrics
 

@@ -305,7 +305,10 @@ async def test_split_query_agent_routes_each_sub_query_with_tool_select(
     )
 
     contents = [episode.content for episode in results]
-    assert any(content.startswith("[StageResult 1] Query: Q1?") for content in contents)
+    assert any("[SubQuery 1] Q1?" in content for content in contents)
+    assert any(
+        "[StageResult 1] alpha (confidence=1.00)" in content for content in contents
+    )
     assert episode_b in results
     assert metrics["queries"][:2] == ["Q1?", "Q2?"]
     assert metrics["subquery_selected_tools"] == [
@@ -367,11 +370,9 @@ async def test_tool_select_agent_uses_selected_tool(
         QueryParam(query="tool query", limit=5, memory=memory),
     )
 
-    assert len(results) == 2
-    assert any(
-        content.startswith("[StageResult 1] Query: tool query")
-        for content in [episode.content for episode in results]
-    )
+    assert len(results) == 1
+    assert "[SubQuery 1] tool query" in results[0].content
+    assert "[StageResult 1] tool-select (confidence=1.00)" in results[0].content
     assert metrics["selected_tool"] == "ChainOfQueryAgent"
     assert selector_model.call_count == 1
 
@@ -430,22 +431,14 @@ async def test_chain_of_query_agent_rewrites_and_accumulates_evidence(
         QueryParam(query="original_query?", limit=10, memory=memory),
     )
 
-    result_contents = [episode.content for episode in results]
-    assert any(
-        content.startswith("[StageResult 1] Query: original_query?")
-        for content in result_contents
-    )
-    assert any(
-        content.startswith("[StageResult 2] Query: sub_query_1")
-        for content in result_contents
-    )
-    assert any(
-        content.startswith("[StageResult 3] Query: sub_query_2")
-        for content in result_contents
-    )
-    assert any(content == "[SubQuery 1] original_query?" for content in result_contents)
-    assert any(content == "[SubQuery 2] sub_query_1" for content in result_contents)
-    assert any(content == "[SubQuery 3] sub_query_2" for content in result_contents)
+    assert len(results) == 1
+    combined_content = results[0].content
+    assert "[SubQuery 1] original_query?" in combined_content
+    assert "[StageResult 1] fact1 (confidence=1.00)" in combined_content
+    assert "[SubQuery 2] sub_query_1" in combined_content
+    assert "[StageResult 2] fact2 (confidence=1.00)" in combined_content
+    assert "[SubQuery 3] sub_query_2" in combined_content
+    assert "[StageResult 3] fact3 (confidence=1.00)" in combined_content
     assert coq_model.call_count == 3
     assert memory.queries == ["original_query?", "sub_query_1", "sub_query_2"]
     assert metrics["queries"] == ["original_query?", "sub_query_1", "sub_query_2"]
@@ -555,15 +548,74 @@ async def test_chain_of_query_agent_returns_high_conf_stage_results_when_insuffi
 
     contents = [episode.content for episode in results]
     assert any(
-        content.startswith("[StageResult 1] Query: Who is person_a parent?")
-        for content in contents
+        "[SubQuery 1] Who is person_a parent?" in content for content in contents
     )
     assert any(
-        content == "[SubQuery 1] Who is person_a parent?" for content in contents
+        "[StageResult 1] person_b (confidence=0.91)" in content for content in contents
     )
     assert source_episode in results
     assert metrics["stage_result_memory_returned"] is True
-    assert metrics["returned_stage_result_count"] == 2
+    assert metrics["returned_stage_result_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_chain_of_query_agent_dedupes_prior_stage_result_episodes(
+    query_policy: QueryPolicy,
+) -> None:
+    now = datetime.now(tz=UTC)
+    prior_stage_episode = Episode(
+        uid="prior-stage",
+        content=(
+            "[SubQuery 1] Who is person_a parent?\n"
+            "[StageResult 1] person_b (confidence=0.91)"
+        ),
+        session_key="test-session",
+        created_at=now,
+        producer_id="retrieval-agent-stage-result",
+        producer_role="assistant",
+    )
+    source_episode = _build_episode(
+        uid="src",
+        content="person_a parent person_b",
+        created_at=now + timedelta(seconds=1),
+    )
+    memory = FakeEpisodicMemory({"Q?": [prior_stage_episode, source_episode]})
+    reranker = DummyReranker()
+    memory_agent = MemMachineAgent(
+        AgentToolBaseParam(
+            model=None,
+            children_tools=[],
+            extra_params={},
+            reranker=reranker,
+        ),
+    )
+    coq_model = DummyLanguageModel(
+        '{"is_sufficient": false, "evidence_indices": [1], "new_query": "Q?", "confidence_score": 0.6, "stage_results": [{"query": "Who is person_a parent?", "stage_result": "person_b", "confidence_score": 0.91}], "generated_sub_queries": ["Who is person_a parent?"]}'
+    )
+    coq_agent = ChainOfQueryAgent(
+        AgentToolBaseParam(
+            model=coq_model,
+            children_tools=[memory_agent],
+            extra_params={"max_attempts": 3},
+            reranker=reranker,
+        ),
+    )
+
+    results, metrics = await coq_agent.do_query(
+        query_policy,
+        QueryParam(query="Q?", limit=10, memory=memory),
+    )
+
+    stage_result_episodes = [
+        episode
+        for episode in results
+        if episode.producer_id == "retrieval-agent-stage-result"
+    ]
+    assert len(stage_result_episodes) == 1
+    assert stage_result_episodes[0].content.count("[SubQuery 1]") == 1
+    assert source_episode in results
+    assert prior_stage_episode not in results
+    assert metrics["returned_stage_result_count"] == 1
 
 
 @pytest.mark.asyncio
