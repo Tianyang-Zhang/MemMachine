@@ -50,6 +50,9 @@ class OpenAIResponsesLanguageModelParams(BaseModel):
             Reasoning effort level for supported models
             (e.g. "minimal", "low", "medium", "high", "none").
             If None, the API default is used.
+        store (bool | None):
+            Optional Responses API `store` flag override.
+            If None, provider default behavior is used.
 
     """
 
@@ -82,6 +85,13 @@ class OpenAIResponsesLanguageModelParams(BaseModel):
             "If None, API default is used."
         ),
     )
+    store: bool | None = Field(
+        None,
+        description=(
+            "Optional Responses API `store` flag override. "
+            "If None, provider default behavior is used."
+        ),
+    )
 
 
 class OpenAIResponsesLanguageModel(LanguageModel):
@@ -104,6 +114,7 @@ class OpenAIResponsesLanguageModel(LanguageModel):
 
         self._max_retry_interval_seconds = params.max_retry_interval_seconds
         self._reasoning_effort = params.reasoning_effort
+        self._store = params.store
 
         metrics_factory = params.metrics_factory
 
@@ -167,6 +178,11 @@ class OpenAIResponsesLanguageModel(LanguageModel):
         """Expose optional reasoning effort config."""
         return self._reasoning_effort
 
+    @property
+    def store(self) -> bool | None:
+        """Expose optional Responses API store override."""
+        return self._store
+
     async def generate_parsed_response(
         self,
         output_format: type[T],
@@ -191,12 +207,18 @@ class OpenAIResponsesLanguageModel(LanguageModel):
         start_time = time.monotonic()
 
         try:
+            request_kwargs: dict[str, Any] = {
+                "model": self._model,
+                "input": input_prompts,
+                "text_format": output_format,
+            }
+            if self._store is not None:
+                request_kwargs["store"] = self._store
+
             response = await self._client.with_options(
                 max_retries=max_attempts,
             ).responses.parse(
-                model=self._model,
-                input=input_prompts,
-                text_format=output_format,
+                **request_kwargs,
             )
         except openai.OpenAIError as e:
             error_message = (
@@ -296,6 +318,8 @@ class OpenAIResponsesLanguageModel(LanguageModel):
                     request_kwargs["reasoning"] = {
                         "effort": self._reasoning_effort,
                     }
+                if self._store is not None:
+                    request_kwargs["store"] = self._store
 
                 if tools is None:
                     response = await self._client.responses.create(

@@ -347,3 +347,10 @@ async def test_split_branch_failure_triggers_fallback(
 
     assert [item.uid for item in episodes] == ["split-fallback"]
     assert metrics["fallback_trigger_reason"] == "sub_skill_exception"
+    assert "unknown_tool" in str(metrics.get("fallback_error_output"))
+    trace = metrics.get("orchestrator_trace")
+    assert isinstance(trace, dict)
+    assert any(
+        event.get("event_type") == "fallback_error_output"
+        for event in trace.get("events", [])
+    )

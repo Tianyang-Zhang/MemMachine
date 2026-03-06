@@ -1,10 +1,10 @@
 """Language model configuration models."""
 
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Literal, Self
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from memmachine_server.common.configuration.mixin_confs import (
     ApiKeyMixin,
@@ -17,6 +17,10 @@ from memmachine_server.common.language_model.amazon_bedrock_language_model impor
 )
 
 DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
+DEFAULT_OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+DEFAULT_OPENAI_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+DEFAULT_OPENAI_RESPONSES_MODEL = "gpt-5-nano"
+DEFAULT_OPENAI_CODEX_MODEL = "gpt-5.3-codex"
 
 
 def _clean_empty_lm_config(conf: dict) -> dict:
@@ -37,7 +41,7 @@ class OpenAIResponsesLanguageModelConf(
     """Configuration for OpenAI Responses-compatible models."""
 
     model: str = Field(
-        default="gpt-5-nano",
+        default=DEFAULT_OPENAI_RESPONSES_MODEL,
         description="OpenAI Responses API-compatible model",
     )
     api_key: SecretStr = Field(
@@ -49,11 +53,91 @@ class OpenAIResponsesLanguageModelConf(
         default=None,
         description="OpenAI Responses API base URL",
     )
+    auth_mode: Literal["api-key", "oauth"] = Field(
+        default="api-key",
+        description=(
+            "Authentication mode for OpenAI Responses. "
+            "Use 'api-key' for OpenAI Platform keys or 'oauth' for Codex OAuth tokens."
+        ),
+    )
+    oauth_refresh_token: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Optional OAuth refresh token used when auth_mode is 'oauth'. "
+            "Can reference an environment variable using `$ENV` or `${ENV}`."
+        ),
+    )
+    oauth_client_id: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Optional OAuth client ID used with oauth_refresh_token. "
+            "Can reference an environment variable using `$ENV` or `${ENV}`."
+        ),
+    )
+    oauth_expires_at: int | None = Field(
+        default=None,
+        description=(
+            "Optional OAuth access-token expiry epoch timestamp in seconds. "
+            "Used to refresh tokens before expiry."
+        ),
+    )
+    oauth_account_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ChatGPT account ID for Codex OAuth requests. "
+            "If omitted, runtime attempts to infer it from the access token."
+        ),
+    )
+    oauth_token_url: str = Field(
+        default=DEFAULT_OPENAI_OAUTH_TOKEN_URL,
+        description="OAuth token endpoint used for refresh-token grants.",
+    )
+    store: bool | None = Field(
+        default=None,
+        description=(
+            "Optional Responses API `store` flag override. "
+            "For Codex OAuth (`auth_mode='oauth'`), defaults to false."
+        ),
+    )
     max_retry_interval_seconds: int = Field(
         default=120,
         description="Maximal retry interval in seconds when retrying API calls",
         gt=0,
     )
+
+    @field_validator("auth_mode", mode="before")
+    @classmethod
+    def normalize_auth_mode(cls, v: str) -> str:
+        """Normalize auth_mode aliases."""
+        if isinstance(v, str):
+            value = v.strip().lower().replace("_", "-")
+            if value in {"apikey", "api-key", "api_key"}:
+                return "api-key"
+            if value in {"oauth", "oauth2"}:
+                return "oauth"
+        return v
+
+    @field_validator("oauth_refresh_token", mode="before")
+    @classmethod
+    def resolve_oauth_refresh_token(
+        cls, v: SecretStr | str | None
+    ) -> SecretStr | str | None:
+        """Resolve environment variable references in OAuth refresh token."""
+        if v is None:
+            return None
+        resolved = cls._resolve_env(v)
+        return SecretStr(resolved) if isinstance(resolved, str) else resolved
+
+    @field_validator("oauth_client_id", mode="before")
+    @classmethod
+    def resolve_oauth_client_id(
+        cls, v: SecretStr | str | None
+    ) -> SecretStr | str | None:
+        """Resolve environment variable references in OAuth client ID."""
+        if v is None:
+            return None
+        resolved = cls._resolve_env(v)
+        return SecretStr(resolved) if isinstance(resolved, str) else resolved
 
     @field_validator("base_url")
     @classmethod
@@ -64,6 +148,45 @@ class OpenAIResponsesLanguageModelConf(
             if not parsed_url.scheme or not parsed_url.netloc:
                 raise ValueError(f"Invalid base URL: base_url={v}")
         return v
+
+    @field_validator("oauth_token_url")
+    @classmethod
+    def validate_oauth_token_url(cls, v: str) -> str:
+        """Ensure the OAuth token URL includes a scheme and host."""
+        parsed_url = urlparse(v)
+        if not parsed_url.scheme or not parsed_url.netloc:
+            raise ValueError(f"Invalid OAuth token URL: oauth_token_url={v}")
+        return v
+
+    @field_validator("oauth_expires_at")
+    @classmethod
+    def validate_oauth_expires_at(cls, v: int | None) -> int | None:
+        """Validate oauth_expires_at is a positive epoch timestamp when provided."""
+        if v is not None and v <= 0:
+            raise ValueError("oauth_expires_at must be a positive epoch timestamp")
+        return v
+
+    @field_validator("oauth_account_id")
+    @classmethod
+    def normalize_oauth_account_id(cls, v: str | None) -> str | None:
+        """Normalize optional OAuth account id."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        return stripped or None
+
+    @model_validator(mode="after")
+    def apply_oauth_defaults(self) -> Self:
+        """Apply Codex OAuth defaults for base_url and store behavior."""
+        if self.auth_mode == "oauth":
+            if self.model == DEFAULT_OPENAI_RESPONSES_MODEL:
+                self.model = DEFAULT_OPENAI_CODEX_MODEL
+            if not self.base_url:
+                self.base_url = DEFAULT_OPENAI_CODEX_BASE_URL
+            if self.store is None:
+                # chatgpt.com/backend-api/codex/responses rejects store=true.
+                self.store = False
+        return self
 
 
 class OpenAIChatCompletionsLanguageModelConf(

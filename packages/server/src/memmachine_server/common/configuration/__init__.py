@@ -50,15 +50,26 @@ logger = logging.getLogger(__name__)
 
 def _is_openai_incomplete(conf: ApiKeyMixin) -> bool:
     """Check if an OpenAI-based config has empty credentials and no base_url."""
+    auth_mode = getattr(conf, "auth_mode", "api-key")
     api_key = getattr(conf, "api_key", None)
     base_url = getattr(conf, "base_url", None)
-    if api_key is None:
-        return False
-    try:
-        api_key_value = api_key.get_secret_value()
-    except Exception:
-        return False
-    if api_key_value != "":
+    oauth_refresh_token = getattr(conf, "oauth_refresh_token", None)
+
+    def _secret_has_value(secret: object) -> bool:
+        if secret is None:
+            return False
+        try:
+            value = secret.get_secret_value()
+        except Exception:
+            return False
+        return isinstance(value, str) and bool(value.strip())
+
+    if auth_mode == "oauth":
+        if _secret_has_value(api_key) or _secret_has_value(oauth_refresh_token):
+            return False
+        return base_url is None or (isinstance(base_url, str) and not base_url)
+
+    if _secret_has_value(api_key):
         return False
     return base_url is None or (isinstance(base_url, str) and not base_url)
 

@@ -1,3 +1,6 @@
+from unittest.mock import MagicMock, patch
+
+import openai
 import pytest
 from pydantic import SecretStr
 
@@ -78,3 +81,68 @@ async def test_build_openai_chat_completions_model(mock_conf):
 
     model = builder.get_language_model("ollama_model")
     assert model is not None
+
+
+@pytest.mark.asyncio
+async def test_build_openai_oauth_responses_model_adds_account_header():
+    conf = LanguageModelsConf(
+        openai_responses_language_model_confs={
+            "openai_codex_oauth": OpenAIResponsesLanguageModelConf(
+                model="gpt-5.3-codex",
+                api_key=SecretStr("oauth-access-token"),
+                auth_mode="oauth",
+                oauth_account_id="account_123",
+            )
+        }
+    )
+
+    with patch("openai.AsyncOpenAI", spec=openai.AsyncOpenAI) as mock_async_openai:
+        builder = LanguageModelManager(conf)
+        await builder.build_all()
+
+    kwargs = mock_async_openai.call_args.kwargs
+    assert kwargs["api_key"] == "oauth-access-token"
+    assert kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert kwargs["default_headers"] == {"ChatGPT-Account-Id": "account_123"}
+
+
+@pytest.mark.asyncio
+async def test_build_openai_oauth_responses_model_refreshes_expired_token():
+    conf = LanguageModelsConf(
+        openai_responses_language_model_confs={
+            "openai_codex_oauth": OpenAIResponsesLanguageModelConf(
+                model="gpt-5.3-codex",
+                api_key=SecretStr(""),
+                auth_mode="oauth",
+                oauth_refresh_token=SecretStr("refresh-token"),
+                oauth_client_id=SecretStr("client-id"),
+                oauth_expires_at=1,
+            )
+        }
+    )
+
+    refresh_response = MagicMock()
+    refresh_response.raise_for_status.return_value = None
+    refresh_response.json.return_value = {
+        "access_token": "new-access-token",
+        "refresh_token": "new-refresh-token",
+        "expires_in": 3600,
+    }
+
+    with (
+        patch("httpx.post", return_value=refresh_response) as mock_httpx_post,
+        patch("openai.AsyncOpenAI", spec=openai.AsyncOpenAI) as mock_async_openai,
+    ):
+        builder = LanguageModelManager(conf)
+        await builder.build_all()
+
+    kwargs = mock_async_openai.call_args.kwargs
+    assert kwargs["api_key"] == "new-access-token"
+    assert kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+    mock_httpx_post.assert_called_once()
+
+    built_conf = conf.openai_responses_language_model_confs["openai_codex_oauth"]
+    assert built_conf.api_key.get_secret_value() == "new-access-token"
+    assert built_conf.oauth_refresh_token is not None
+    assert built_conf.oauth_refresh_token.get_secret_value() == "new-refresh-token"
+    assert built_conf.oauth_expires_at is not None

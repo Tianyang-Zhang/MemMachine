@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -91,6 +92,11 @@ async def run_wiki(
     print(f"Evaluation result path: {args.eval_result_path}")
     print(f"Length: {args.length}")
     print(f"Test target: {args.test_target}")
+    if args.test_target != "retrieval_skill":
+        print(
+            "[wiki] test_target is not retrieval_skill; retrieval-agent LLM "
+            "metrics may remain 0 and MemMachineSkill can be selected."
+        )
 
     data_path = args.data_path
     eval_result_path = args.eval_result_path
@@ -99,6 +105,21 @@ async def run_wiki(
         data_path = dpath
     if epath:
         eval_result_path = epath
+
+    oauth_enabled = bool(
+        os.getenv("OPENAI_CODEX_OAUTH_ACCESS_TOKEN", "").strip()
+        or os.getenv("OPENAI_OAUTH_ACCESS_TOKEN", "").strip()
+    )
+    default_batch_size = 20 if oauth_enabled else 25
+    batch_size_raw = os.getenv("WIKI_BENCH_BATCH_SIZE", str(default_batch_size))
+    try:
+        batch_size = max(1, int(batch_size_raw))
+    except ValueError:
+        batch_size = default_batch_size
+    print(
+        f"Batch size: {batch_size} "
+        f"(oauth_enabled={oauth_enabled}, env WIKI_BENCH_BATCH_SIZE={batch_size_raw})"
+    )
 
     vector_graph_store = skill_utils.init_vector_graph_store(
         neo4j_uri="bolt://localhost:7687"
@@ -140,7 +161,7 @@ async def run_wiki(
             )
         )
 
-        if len(tasks) % 25 == 0 or (q == questions[-1]):
+        if len(tasks) % batch_size == 0 or (q == questions[-1]):
             responses = await asyncio.gather(*tasks)
             tasks = []
             skill_utils.update_results(responses, attribute_matrix, results)

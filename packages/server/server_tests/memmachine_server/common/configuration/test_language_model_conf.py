@@ -173,3 +173,29 @@ def test_read_aws_keys_from_env(monkeypatch, aws_model_conf):
     assert conf.aws_access_key_id.get_secret_value() == "my-key-id"
     assert conf.aws_secret_access_key.get_secret_value() == "access-key"
     assert conf.aws_session_token is None
+
+
+def test_openai_responses_oauth_defaults():
+    conf = OpenAIResponsesLanguageModelConf(
+        api_key=SecretStr("oauth-access-token"),
+        auth_mode="oauth",
+    )
+    assert conf.model == "gpt-5.3-codex"
+    assert conf.base_url == "https://chatgpt.com/backend-api/codex"
+    assert conf.store is False
+
+
+def test_read_openai_oauth_secrets_from_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_OAUTH_REFRESH_TOKEN", "refresh-token")
+    monkeypatch.setenv("OPENAI_OAUTH_CLIENT_ID", "client-id")
+    conf = OpenAIResponsesLanguageModelConf(
+        model="gpt-5.3-codex",
+        api_key=SecretStr("oauth-access-token"),
+        auth_mode="oauth",
+        oauth_refresh_token="${OPENAI_OAUTH_REFRESH_TOKEN}",
+        oauth_client_id="${OPENAI_OAUTH_CLIENT_ID}",
+    )
+    assert conf.oauth_refresh_token is not None
+    assert conf.oauth_client_id is not None
+    assert conf.oauth_refresh_token.get_secret_value() == "refresh-token"
+    assert conf.oauth_client_id.get_secret_value() == "client-id"

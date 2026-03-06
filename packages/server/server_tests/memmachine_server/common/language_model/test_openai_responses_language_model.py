@@ -237,6 +237,32 @@ async def test_generate_response_with_tool_calls(mock_async_openai, minimal_conf
 
 
 @pytest.mark.asyncio
+async def test_generate_response_with_store_override(mock_async_openai, minimal_config):
+    """Test that optional store flag is forwarded to responses.create."""
+    mock_response = MagicMock()
+    mock_response.output_text = "stored"
+    mock_response.output = None
+    mock_response.usage = None
+
+    mock_client = mock_async_openai.return_value
+    mock_client.responses.create.return_value = mock_response
+
+    config = OpenAIResponsesLanguageModelParams(
+        client=minimal_config.client,
+        model=minimal_config.model,
+        store=False,
+    )
+    lm = OpenAIResponsesLanguageModel(config)
+    content, _tool_calls = await lm.generate_response(
+        system_prompt="System prompt",
+        user_prompt="User prompt",
+    )
+    assert content == "stored"
+    call_args = mock_client.responses.create.call_args
+    assert call_args.kwargs["store"] is False
+
+
+@pytest.mark.asyncio
 async def test_generate_response_tool_call_json_repair(
     mock_async_openai,
     minimal_config,

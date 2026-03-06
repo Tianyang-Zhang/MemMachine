@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import time
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -219,6 +220,22 @@ class RetrieveSkill(SkillToolBase):
 
     def _raise_contract_error(self, *, why: str, fallback_reason: str) -> None:
         raise self._contract_error(why=why, fallback_reason=fallback_reason)
+
+    @staticmethod
+    def _format_exception_output(error: BaseException) -> str:
+        rendered = "".join(
+            traceback.format_exception(
+                type(error),
+                error,
+                error.__traceback__,
+            )
+        ).strip()
+        if rendered:
+            return rendered
+        text = str(error).strip()
+        if text:
+            return text
+        return repr(error)
 
     def _parse_function_call(
         self,
@@ -730,6 +747,7 @@ class RetrieveSkill(SkillToolBase):
         session: TopLevelSkillSessionState,
         reason: str,
         code: str,
+        error_output: str | None = None,
         aggregated_metrics: dict[str, Any] | None = None,
     ) -> tuple[list[Episode], dict[str, object]]:
         session.next_step()
@@ -749,6 +767,7 @@ class RetrieveSkill(SkillToolBase):
                 "query": query.query,
                 "episodes_returned": len(fallback_episodes),
                 "fallback_reason": reason,
+                "error_output": error_output,
             },
         )
         session.record_event(
@@ -756,6 +775,12 @@ class RetrieveSkill(SkillToolBase):
             event_type="fallback_applied",
             detail=f"Fallback executed with reason={reason}.",
         )
+        if isinstance(error_output, str) and error_output.strip():
+            session.record_event(
+                actor="top-level",
+                event_type="fallback_error_output",
+                detail=error_output,
+            )
         session.merge_episodes(fallback_episodes)
         session.finalize()
         metrics: dict[str, object] = {}
@@ -773,6 +798,8 @@ class RetrieveSkill(SkillToolBase):
         )
         metrics["fallback_trigger_reason"] = reason
         metrics["skill_contract_error_code"] = code
+        if isinstance(error_output, str) and error_output.strip():
+            metrics["fallback_error_output"] = error_output
         metrics["top_level_session_invocation_count"] = 1
         metrics.setdefault("llm_call_count", 0)
         metrics.setdefault("input_token", 0)
@@ -1414,8 +1441,8 @@ class RetrieveSkill(SkillToolBase):
                 session=session,
             )
 
-        except SkillToolCallFormatError:
-            err = self._contract_error(
+        except SkillToolCallFormatError as err:
+            contract_error = self._contract_error(
                 why="Top-level tool-call payload shape invalid.",
                 fallback_reason="invalid_tool_call",
             )
@@ -1423,12 +1450,13 @@ class RetrieveSkill(SkillToolBase):
                 policy=policy,
                 query=query,
                 session=session,
-                reason=err.payload.fallback_trigger_reason,
-                code=err.code,
+                reason=contract_error.payload.fallback_trigger_reason,
+                code=contract_error.code,
+                error_output=self._format_exception_output(err),
                 aggregated_metrics=aggregated_metrics,
             )
-        except SkillToolNotFoundError:
-            err = self._contract_error(
+        except SkillToolNotFoundError as err:
+            contract_error = self._contract_error(
                 why="Top-level requested unsupported tool name.",
                 fallback_reason="invalid_tool_call",
             )
@@ -1436,8 +1464,9 @@ class RetrieveSkill(SkillToolBase):
                 policy=policy,
                 query=query,
                 session=session,
-                reason=err.payload.fallback_trigger_reason,
-                code=err.code,
+                reason=contract_error.payload.fallback_trigger_reason,
+                code=contract_error.code,
+                error_output=self._format_exception_output(err),
                 aggregated_metrics=aggregated_metrics,
             )
         except SkillSessionLimitError as err:
@@ -1454,6 +1483,7 @@ class RetrieveSkill(SkillToolBase):
                 session=session,
                 reason=contract_error.payload.fallback_trigger_reason,
                 code=contract_error.code,
+                error_output=self._format_exception_output(err),
                 aggregated_metrics=aggregated_metrics,
             )
         except SkillLanguageModelError as err:
@@ -1467,6 +1497,7 @@ class RetrieveSkill(SkillToolBase):
                 session=session,
                 reason=contract_error.payload.fallback_trigger_reason,
                 code=contract_error.code,
+                error_output=self._format_exception_output(err),
                 aggregated_metrics=aggregated_metrics,
             )
         except SkillContractError as err:
@@ -1481,6 +1512,7 @@ class RetrieveSkill(SkillToolBase):
                 session=session,
                 reason=err.payload.fallback_trigger_reason,
                 code=err.code,
+                error_output=self._format_exception_output(err),
                 aggregated_metrics=aggregated_metrics,
             )
         except Exception as err:
@@ -1499,6 +1531,7 @@ class RetrieveSkill(SkillToolBase):
                 session=session,
                 reason=mapped.payload.fallback_trigger_reason,
                 code=mapped.code,
+                error_output=self._format_exception_output(err),
                 aggregated_metrics=aggregated_metrics,
             )
         else:

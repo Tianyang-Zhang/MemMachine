@@ -18,6 +18,11 @@ ToolHandler = Callable[[dict[str, object]], object | Awaitable[object]]
 
 logger = logging.getLogger(__name__)
 
+CODEX_BACKEND_BASE_PATH = "chatgpt.com/backend-api/codex"
+DEFAULT_CODEX_INSTRUCTIONS = (
+    "Follow the provided system and user messages exactly, and use tools when needed."
+)
+
 
 class SkillLanguageModelError(RuntimeError):
     """Base error for skill session runtime failures."""
@@ -67,6 +72,7 @@ class SkillOpenAISessionLanguageModelParams(BaseModel):
     model: str = Field(min_length=1)
     max_retry_interval_seconds: int = Field(default=120, gt=0)
     reasoning_effort: str | None = None
+    store: bool | None = None
 
 
 class SkillSessionModelProtocol(Protocol):
@@ -94,6 +100,49 @@ class SkillLanguageModel:
         self._model = params.model
         self._max_retry_interval_seconds = params.max_retry_interval_seconds
         self._reasoning_effort = params.reasoning_effort
+        self._store = params.store
+        self._is_codex_backend = self._client_targets_codex_backend(self._client)
+
+    @staticmethod
+    def _client_targets_codex_backend(client: openai.AsyncOpenAI) -> bool:
+        base_url = str(getattr(client, "base_url", "")).strip().lower()
+        return CODEX_BACKEND_BASE_PATH in base_url
+
+    @staticmethod
+    def _format_openai_error(err: openai.OpenAIError) -> str:
+        message = str(err).strip()
+        if message:
+            return message
+        body = getattr(err, "body", None)
+        if body is not None:
+            return str(body)
+        return repr(err)
+
+    def _build_responses_request(
+        self,
+        *,
+        current_input: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        tool_choice: str | dict[str, str],
+        last_response_id: str | None,
+        instructions: str | None = None,
+    ) -> dict[str, object]:
+        """Build one Responses API request payload for a live-session turn."""
+        request: dict[str, object] = {
+            "model": self._model,
+            "input": current_input,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        }
+        if instructions is not None:
+            request["instructions"] = instructions
+        if self._reasoning_effort is not None:
+            request["reasoning"] = {"effort": self._reasoning_effort}
+        if self._store is not None:
+            request["store"] = self._store
+        if last_response_id is not None and not self._is_codex_backend:
+            request["previous_response_id"] = last_response_id
+        return request
 
     @classmethod
     def from_openai_responses_language_model(
@@ -114,6 +163,7 @@ class SkillLanguageModel:
                 model=model.model_name,
                 max_retry_interval_seconds=model.max_retry_interval_seconds,
                 reasoning_effort=model.reasoning_effort,
+                store=model.store,
             )
         )
 
@@ -140,10 +190,15 @@ class SkillLanguageModel:
         llm_time_total = 0.0
         raw_model_output = ""
         last_response_id: str | None = None
-        current_input: list[dict[str, object]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+        request_instructions: str | None = None
+        if self._is_codex_backend:
+            request_instructions = system_prompt
+            current_input = [{"role": "user", "content": user_prompt}]
+        else:
+            current_input = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
 
         while True:
             if turn_count >= max_turns:
@@ -154,16 +209,13 @@ class SkillLanguageModel:
             ):
                 raise SkillSessionLimitError("Skill session exceeded timeout.")
 
-            request: dict[str, object] = {
-                "model": self._model,
-                "input": current_input,
-                "tools": tools,
-                "tool_choice": tool_choice,
-            }
-            if self._reasoning_effort is not None:
-                request["reasoning"] = {"effort": self._reasoning_effort}
-            if last_response_id is not None:
-                request["previous_response_id"] = last_response_id
+            request = self._build_responses_request(
+                current_input=current_input,
+                tools=tools,
+                tool_choice=tool_choice,
+                last_response_id=last_response_id,
+                instructions=request_instructions,
+            )
 
             llm_call_started = time.monotonic()
             response = await self._call_responses_create_with_retry(
@@ -195,6 +247,11 @@ class SkillLanguageModel:
                     turn_count=turn_count,
                 )
 
+            if self._is_codex_backend:
+                current_input.extend(
+                    self._normalize_function_calls_for_replay(function_calls)
+                )
+
             executions = await self._execute_function_calls(
                 function_calls=function_calls,
                 tool_registry=tool_registry,
@@ -215,6 +272,33 @@ class SkillLanguageModel:
                     }
                 )
             current_input.extend(function_call_outputs)
+
+    def _normalize_function_calls_for_replay(
+        self,
+        function_calls: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        normalized: list[dict[str, object]] = []
+        for raw_call in function_calls:
+            call_id = raw_call.get("call_id")
+            name = raw_call.get("name")
+            if not isinstance(call_id, str) or not call_id.strip():
+                continue
+            if not isinstance(name, str) or not name.strip():
+                continue
+            raw_arguments = raw_call.get("arguments", {})
+            if isinstance(raw_arguments, str):
+                serialized_arguments = raw_arguments
+            else:
+                serialized_arguments = json.dumps(raw_arguments, default=str)
+            normalized.append(
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": serialized_arguments,
+                }
+            )
+        return normalized
 
     async def _execute_function_calls(
         self,
@@ -302,7 +386,14 @@ class SkillLanguageModel:
         sleep_seconds = 1
         for attempt in range(1, max_attempts + 1):
             try:
-                return await self._client.responses.create(**kwargs)
+                request_kwargs = dict(kwargs)
+                if self._is_codex_backend:
+                    request_kwargs.setdefault("store", False)
+                    request_kwargs.setdefault("instructions", DEFAULT_CODEX_INSTRUCTIONS)
+                    async with self._client.responses.stream(**request_kwargs) as stream:
+                        await stream.until_done()
+                        return await stream.get_final_response()
+                return await self._client.responses.create(**request_kwargs)
             except (
                 openai.RateLimitError,
                 openai.APITimeoutError,
@@ -311,7 +402,8 @@ class SkillLanguageModel:
                 if attempt >= max_attempts:
                     raise SkillLanguageModelError(
                         f"[call uuid: {call_uuid}] OpenAI responses.create failed "
-                        f"after {attempt} attempts due to retryable {type(err).__name__}."
+                        f"after {attempt} attempts due to retryable {type(err).__name__}: "
+                        f"{self._format_openai_error(err)}"
                     ) from err
                 logger.info(
                     "[call uuid: %s] Retrying responses.create in %d second(s) "
@@ -329,7 +421,8 @@ class SkillLanguageModel:
             except openai.OpenAIError as err:
                 raise SkillLanguageModelError(
                     f"[call uuid: {call_uuid}] OpenAI responses.create failed "
-                    f"with non-retryable {type(err).__name__}."
+                    f"with non-retryable {type(err).__name__}: "
+                    f"{self._format_openai_error(err)}"
                 ) from err
 
         raise SkillLanguageModelError(

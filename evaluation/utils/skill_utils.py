@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import time
@@ -47,6 +48,100 @@ from memmachine_server.retrieval_skill.subskills.direct_memory_skill import (
 
 RETRIEVE_SKILL_NAME = "RetrieveSkill"
 DIRECT_MEMORY_SKILL_NAME = "MemMachineSkill"
+DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+# DEFAULT_CODEX_MODEL = "gpt-5.3-codex"
+DEFAULT_CODEX_MODEL = "gpt-5.4"
+DEFAULT_API_MODEL = "gpt-5-mini"
+DEFAULT_CODEX_REASONING_EFFORT = "none"
+DEFAULT_API_REASONING_EFFORT = "medium"
+_REASONING_EFFORT_ALIASES = {
+    "lowest": "minimal",
+}
+_VALID_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "none"}
+
+
+def _get_openai_codex_oauth_access_token() -> str | None:
+    for env_var in ("OPENAI_CODEX_OAUTH_ACCESS_TOKEN", "OPENAI_OAUTH_ACCESS_TOKEN"):
+        token = os.getenv(env_var, "").strip()
+        if token:
+            return token
+    return None
+
+
+def _resolve_skill_model_name(model_name: str, using_codex_oauth: bool) -> str:
+    if using_codex_oauth and model_name == DEFAULT_API_MODEL:
+        return os.getenv("OPENAI_CODEX_MODEL", DEFAULT_CODEX_MODEL)
+    return model_name
+
+
+def _normalize_reasoning_effort(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    normalized = _REASONING_EFFORT_ALIASES.get(normalized, normalized)
+    if normalized not in _VALID_REASONING_EFFORTS:
+        valid = ", ".join(sorted(_VALID_REASONING_EFFORTS))
+        raise ValueError(
+            f"Invalid reasoning effort '{value}'. Valid values: {valid}."
+        )
+    return normalized
+
+
+def _resolve_skill_reasoning_effort(
+    *,
+    using_codex_oauth: bool,
+    override: str | None = None,
+) -> str | None:
+    resolved_override = _normalize_reasoning_effort(override)
+    if resolved_override is not None:
+        return resolved_override
+
+    env_var_candidates = (
+        ("OPENAI_CODEX_REASONING_EFFORT", "OPENAI_SKILL_REASONING_EFFORT")
+        if using_codex_oauth
+        else ("OPENAI_API_REASONING_EFFORT", "OPENAI_SKILL_REASONING_EFFORT")
+    )
+    for env_var in env_var_candidates:
+        env_value = _normalize_reasoning_effort(os.getenv(env_var))
+        if env_value is not None:
+            return env_value
+
+    if using_codex_oauth:
+        return DEFAULT_CODEX_REASONING_EFFORT
+    return DEFAULT_API_REASONING_EFFORT
+
+
+def _extract_rate_limit_reset_seconds(err: Exception) -> float | None:
+    body = getattr(err, "body", None)
+    if not isinstance(body, dict):
+        return None
+    error_obj = body.get("error")
+    if not isinstance(error_obj, dict):
+        return None
+    value = error_obj.get("resets_in_seconds")
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _build_skill_responses_client(
+    *,
+    codex_oauth_access_token: str | None,
+) -> openai.AsyncOpenAI:
+    if not codex_oauth_access_token:
+        return openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    base_url = os.getenv("OPENAI_CODEX_BASE_URL", DEFAULT_CODEX_BASE_URL).strip()
+    account_id = os.getenv("OPENAI_CODEX_ACCOUNT_ID", "").strip()
+    client_kwargs: dict[str, object] = {
+        "api_key": codex_oauth_access_token,
+        "base_url": base_url or DEFAULT_CODEX_BASE_URL,
+    }
+    if account_id:
+        client_kwargs["default_headers"] = {"ChatGPT-Account-Id": account_id}
+    return openai.AsyncOpenAI(**client_kwargs)
 
 
 def _normalize_sub_skill_name(raw_name: str) -> str | None:
@@ -179,7 +274,7 @@ def _extract_llm_call_count(perf_metrics: dict[str, Any]) -> int:
     return inferred
 
 
-async def process_question(
+async def process_question(  # noqa: C901
     answer_prompt: str,
     query_skill: SkillToolBase,
     memory: EpisodicMemory,
@@ -190,9 +285,11 @@ async def process_question(
     supporting_facts: list[str],
     adversarial_answer: str = "",
     search_limit: int = 20,
-    model_name: str = "gpt-5-mini",
+    model_name: str = DEFAULT_API_MODEL,
     full_content: str | None = None,
     extra_attributes: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
+    answer_model_use_oauth: bool = False,
 ):
     perf_metrics: dict[str, Any] = {}
     memory_start = 0
@@ -226,13 +323,60 @@ async def process_question(
 
     prompt = answer_prompt.format(memories=formatted_context, question=question)
 
-    rsp_start = time.time()
-    rsp = await model.responses.create(
-        model=model_name,
-        max_output_tokens=4096,
-        top_p=1,
-        input=[{"role": "user", "content": prompt}],
+    answer_uses_codex_oauth = bool(answer_model_use_oauth)
+    effective_model_name = _resolve_skill_model_name(
+        model_name, answer_uses_codex_oauth
     )
+    effective_reasoning_effort = _resolve_skill_reasoning_effort(
+        using_codex_oauth=answer_uses_codex_oauth,
+        override=reasoning_effort,
+    )
+
+    rsp_start = time.time()
+    request_kwargs: dict[str, Any] = {
+        "model": effective_model_name,
+        "input": [{"role": "user", "content": prompt}],
+    }
+    if not answer_uses_codex_oauth:
+        request_kwargs["max_output_tokens"] = 4096
+        request_kwargs["top_p"] = 1
+    if effective_reasoning_effort is not None:
+        request_kwargs["reasoning"] = {"effort": effective_reasoning_effort}
+    if answer_uses_codex_oauth:
+        # chatgpt.com/backend-api/codex/responses rejects store=true.
+        request_kwargs["store"] = False
+        request_kwargs["instructions"] = (
+            "Follow the user's prompt exactly and answer as requested."
+        )
+
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if answer_uses_codex_oauth:
+                async with model.responses.stream(**request_kwargs) as stream:
+                    await stream.until_done()
+                    rsp = await stream.get_final_response()
+            else:
+                rsp = await model.responses.create(**request_kwargs)
+            break
+        except (
+            openai.RateLimitError,
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+        ) as err:
+            if attempt == max_attempts:
+                raise
+
+            sleep_seconds = min(30.0, float(2 ** (attempt - 1)))
+            reset_seconds = _extract_rate_limit_reset_seconds(err)
+            if reset_seconds is not None:
+                sleep_seconds = max(sleep_seconds, min(reset_seconds, 120.0))
+            print(
+                "[skill_utils] Retrying answer LLM call after "
+                f"{type(err).__name__} (attempt {attempt}/{max_attempts}) "
+                f"in {sleep_seconds:.1f}s"
+            )
+            await asyncio.sleep(sleep_seconds)
     rsp_end = time.time()
 
     mem_retrieval_time = perf_metrics.get("memory_retrieval_time", 0)
@@ -535,10 +679,11 @@ def init_vector_graph_store(
 
 async def init_memmachine_params(
     vector_graph_store: Neo4jVectorGraphStore,
-    model_name: str = "gpt-5-mini",
+    model_name: str = DEFAULT_API_MODEL,
     session_id: str = "",
     skill_name: str = RETRIEVE_SKILL_NAME,
     message_sentence_chunking: bool = False,
+    reasoning_effort: str | None = None,
 ) -> tuple[EpisodicMemory, openai.AsyncOpenAI, SkillToolBase]:
     openai_client = openai.AsyncOpenAI(
         api_key=os.getenv("OPENAI_API_KEY"),
@@ -589,15 +734,34 @@ async def init_memmachine_params(
         ),
     )
 
+    codex_oauth_access_token = _get_openai_codex_oauth_access_token()
+    responses_client = _build_skill_responses_client(
+        codex_oauth_access_token=codex_oauth_access_token
+    )
+    effective_model_name = _resolve_skill_model_name(
+        model_name, codex_oauth_access_token is not None
+    )
+    effective_reasoning_effort = _resolve_skill_reasoning_effort(
+        using_codex_oauth=codex_oauth_access_token is not None,
+        override=reasoning_effort,
+    )
+    if codex_oauth_access_token is not None:
+        print(
+            "[skill_utils] OpenAI auth mode: OAuth "
+            f"(model={effective_model_name}, reasoning_effort={effective_reasoning_effort})"
+        )
+    else:
+        print(
+            "[skill_utils] OpenAI auth mode: API key "
+            f"(model={effective_model_name}, reasoning_effort={effective_reasoning_effort})"
+        )
+
     skill_model: LanguageModel = OpenAIResponsesLanguageModel(
         OpenAIResponsesLanguageModelParams(
-            client=openai.AsyncOpenAI(
-                api_key=os.getenv("OPENAI_API_KEY"),
-                base_url="https://api.openai.com/v1",
-            ),
-            model=model_name,
-            # Default medium for gpt-5-mini
-            # reasoning_effort="minimal",
+            client=responses_client,
+            model=effective_model_name,
+            store=False if codex_oauth_access_token is not None else None,
+            reasoning_effort=effective_reasoning_effort,
         ),
     )
     query_skill = await init_skill(skill_model, reranker, skill_name)

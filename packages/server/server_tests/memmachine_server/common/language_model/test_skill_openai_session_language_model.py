@@ -218,3 +218,33 @@ async def test_openai_live_session_respects_max_turns(
             tool_registry={"lookup": lookup},
             max_turns=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_openai_live_session_forwards_store_override(
+    mock_async_openai_client: Any,
+) -> None:
+    mock_async_openai_client.responses.create.return_value = {
+        "id": "resp_1",
+        "output_text": "done",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+        "output": [],
+    }
+
+    model = SkillLanguageModel(
+        SkillOpenAISessionLanguageModelParams(
+            client=mock_async_openai_client,
+            model="gpt-5",
+            store=False,
+        )
+    )
+
+    _result = await model.run_live_session(
+        system_prompt="sys",
+        user_prompt="find alpha",
+        tools=[],
+        tool_registry={},
+    )
+
+    kwargs = mock_async_openai_client.responses.create.await_args.kwargs
+    assert kwargs["store"] is False

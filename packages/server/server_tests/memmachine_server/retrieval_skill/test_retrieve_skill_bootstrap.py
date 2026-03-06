@@ -200,6 +200,13 @@ async def test_retrieve_skill_bootstrap_fallback_reason_for_errors(
     assert metrics["route"] == "RetrieveSkill"
     assert metrics["fallback_trigger_reason"] == "downstream_tool_failure"
     assert metrics["skill_contract_error_code"] == "SKILL_CONTRACT_DOWNSTREAM_FAILURE"
+    assert "forced top-level model failure" in str(metrics.get("fallback_error_output"))
+    trace = metrics.get("orchestrator_trace")
+    assert isinstance(trace, dict)
+    assert any(
+        event.get("event_type") == "fallback_error_output"
+        for event in trace.get("events", [])
+    )
 
 
 @pytest.mark.asyncio
