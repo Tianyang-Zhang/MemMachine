@@ -175,19 +175,6 @@ def _spawn_coq_call(query: str = "hello") -> dict[str, Any]:
     }
 
 
-def _spawn_split_call(query: str = "hello") -> dict[str, Any]:
-    return {
-        "function": {
-            "name": "spawn_sub_skill",
-            "arguments": {
-                "skill_name": "split",
-                "query": query,
-                "rationale": "split",
-            },
-        }
-    }
-
-
 def _return_final_call() -> dict[str, Any]:
     return {
         "function": {
@@ -296,40 +283,18 @@ async def test_fallback_preserves_partial_evidence_before_timeout(
 
 
 @pytest.mark.asyncio
-async def test_split_branch_failure_triggers_fallback(
+async def test_coq_invalid_sub_skill_output_triggers_fallback(
     query_policy: QueryPolicy,
 ) -> None:
-    fallback_episode = _build_episode("split-fallback", "split-fallback")
+    fallback_episode = _build_episode("coq-fallback", "coq-fallback")
     memory = FakeEpisodicMemory({"hello": [fallback_episode]})
     model = PolicyLanguageModel(
         outputs=[
             (
                 "top-level",
                 [
-                    _spawn_split_call("hello"),
-                    {
-                        "function": {
-                            "name": "spawn_sub_skill",
-                            "arguments": {
-                                "skill_name": "coq",
-                                "query": "branch then detail",
-                            },
-                        }
-                    },
+                    _spawn_coq_call("branch then detail"),
                     _return_final_call(),
-                ],
-            ),
-            (
-                "split-planner",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": '{"sub_queries":["branch then detail"]}'
-                            },
-                        }
-                    }
                 ],
             ),
             (
@@ -345,7 +310,7 @@ async def test_split_branch_failure_triggers_fallback(
         QueryParam(query="hello", limit=5, memory=memory),
     )
 
-    assert [item.uid for item in episodes] == ["split-fallback"]
+    assert [item.uid for item in episodes] == ["coq-fallback"]
     assert metrics["fallback_trigger_reason"] == "sub_skill_exception"
 
 

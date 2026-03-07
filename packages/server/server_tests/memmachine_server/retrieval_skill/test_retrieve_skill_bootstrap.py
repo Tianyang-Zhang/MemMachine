@@ -289,7 +289,7 @@ async def test_retrieve_skill_attaches_all_skill_bundles_on_session_start(
     bundle_names = [
         bundle.name for bundle in session_model.provider_skill_bundles_history[0]
     ]
-    assert bundle_names == ["retrieve-skill", "coq", "split"]
+    assert bundle_names == ["retrieve-skill", "coq"]
 
 
 @pytest.mark.asyncio

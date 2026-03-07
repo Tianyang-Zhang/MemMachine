@@ -116,8 +116,7 @@ def test_invalid_result_after_normalize_raises_stable_error() -> None:
     assert normalizer_calls["count"] == 1
     assert exc_info.value.code == SkillContractErrorCode.INVALID_OUTPUT.value
     assert (
-        exc_info.value.payload.fallback_trigger_reason
-        == "invalid_after_normalization"
+        exc_info.value.payload.fallback_trigger_reason == "invalid_after_normalization"
     )
 
 
@@ -134,9 +133,9 @@ def test_invalid_result_without_normalizer_raises_error_code() -> None:
 
 
 def test_top_level_spawn_sub_skill_schema_uses_enum_constraints() -> None:
-    schemas = top_level_tool_schemas(["spawn_sub_skill"], ["coq", "split"])
+    schemas = top_level_tool_schemas(["spawn_sub_skill"], ["coq"])
     assert len(schemas) == 1
     spawn_schema = schemas[0]
     properties = spawn_schema["parameters"]["properties"]
     skill_name_schema = properties["skill_name"]
-    assert skill_name_schema["enum"] == ["coq", "split"]
+    assert skill_name_schema["enum"] == ["coq"]

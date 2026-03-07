@@ -498,16 +498,16 @@ async def test_legacy_direct_memory_sub_skill_name_is_rejected(
 
 
 @pytest.mark.asyncio
-async def test_top_level_routes_split_branches_and_applies_final_rerank(
+async def test_top_level_internal_split_branching_and_applies_final_rerank(
     query_policy: QueryPolicy,
 ) -> None:
-    split_a = _build_episode("split-a", "split evidence a")
-    split_b = _build_episode("split-b", "split evidence b")
-    split_c = _build_episode("split-c", "split evidence c")
+    branch_a = _build_episode("branch-a", "branch evidence a")
+    branch_b = _build_episode("branch-b", "branch evidence b")
+    branch_c = _build_episode("branch-c", "branch evidence c")
     memory = FakeEpisodicMemory(
         {
-            "branch direct": [split_a, split_b],
-            "branch coq then detail": [split_c],
+            "branch direct": [branch_a, branch_b],
+            "branch coq then detail": [branch_c],
         }
     )
     model = ScriptedLanguageModel(
@@ -515,15 +515,6 @@ async def test_top_level_routes_split_branches_and_applies_final_rerank(
             (
                 "top-level",
                 [
-                    {
-                        "function": {
-                            "name": "spawn_sub_skill",
-                            "arguments": {
-                                "skill_name": "split",
-                                "query": "hello",
-                            },
-                        }
-                    },
                     {
                         "function": {
                             "name": "direct_memory_search",
@@ -544,25 +535,15 @@ async def test_top_level_routes_split_branches_and_applies_final_rerank(
                     {
                         "function": {
                             "name": "return_final",
-                            "arguments": {"final_response": "done"},
-                        }
-                    },
-                ],
-            ),
-            (
-                "split planner",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
                             "arguments": {
-                                "summary": (
-                                    '{"sub_queries":["branch direct",'
-                                    '"branch coq then detail"]}'
-                                )
+                                "final_response": "done",
+                                "sub_queries": [
+                                    "branch direct",
+                                    "branch coq then detail",
+                                ],
                             },
                         }
-                    }
+                    },
                 ],
             ),
             (
@@ -604,28 +585,21 @@ async def test_top_level_routes_split_branches_and_applies_final_rerank(
     assert metrics["rerank_applied"] is True
     sub_skill_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_skill_runs, list)
-    assert sub_skill_runs[0]["skill_name"] == "split"
-    split_summary_calls = [
-        call
-        for call in sub_skill_runs[0]["tool_calls"]
-        if call["tool_name"] == "return_sub_skill_result"
-    ]
-    assert len(split_summary_calls) == 1
-    assert "sub_queries" in split_summary_calls[0]["arguments"]["summary"]
-    assert [run["skill_name"] for run in sub_skill_runs] == [
-        "split",
-        "coq",
+    assert [run["skill_name"] for run in sub_skill_runs] == ["coq"]
+    assert metrics.get("top_level_sub_queries") == [
+        "branch direct",
+        "branch coq then detail",
     ]
 
 
 @pytest.mark.asyncio
-async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
+async def test_top_level_internal_split_executes_multiple_direct_branches(
     query_policy: QueryPolicy,
 ) -> None:
     branch_a_query = "When did Fleetwood Sheppard die?"
     branch_b_query = "When did George William Whitaker die?"
-    branch_a = _build_episode("split-v1-a", "Fleetwood branch evidence")
-    branch_b = _build_episode("split-v1-b", "Whitaker branch evidence")
+    branch_a = _build_episode("branch-v1-a", "Fleetwood branch evidence")
+    branch_b = _build_episode("branch-v1-b", "Whitaker branch evidence")
     memory = FakeEpisodicMemory(
         {
             branch_a_query: [branch_a],
@@ -637,15 +611,6 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
             (
                 "top-level",
                 [
-                    {
-                        "function": {
-                            "name": "spawn_sub_skill",
-                            "arguments": {
-                                "skill_name": "split",
-                                "query": "Who died first?",
-                            },
-                        }
-                    },
                     {
                         "function": {
                             "name": "direct_memory_search",
@@ -665,51 +630,12 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
                     {
                         "function": {
                             "name": "return_final",
-                            "arguments": {"final_response": "done"},
-                        }
-                    },
-                ],
-            ),
-            (
-                "split planner",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
                             "arguments": {
-                                "summary": (
-                                    '{"v1":{"sub_queries":['
-                                    '"When did Fleetwood Sheppard die?",'
-                                    '"When did George William Whitaker die?"],'
-                                    '"reason_code":"derived_intent_rewritten",'
-                                    '"reason_note":"converted comparison into two fact '
-                                    'retrievals","line_count":2}}'
-                                )
+                                "final_response": "done",
+                                "sub_queries": [branch_a_query, branch_b_query],
                             },
                         }
-                    }
-                ],
-            ),
-            (
-                "branch one",
-                [
-                    {
-                        "function": {
-                            "name": "memmachine_search",
-                            "arguments": {"query": branch_a_query},
-                        }
-                    }
-                ],
-            ),
-            (
-                "branch two",
-                [
-                    {
-                        "function": {
-                            "name": "memmachine_search",
-                            "arguments": {"query": branch_b_query},
-                        }
-                    }
+                    },
                 ],
             ),
         ]
@@ -727,14 +653,16 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
     assert branch_b_query in memory.queries
     sub_skill_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_skill_runs, list)
-    assert [run["skill_name"] for run in sub_skill_runs] == ["split"]
+    assert sub_skill_runs == []
+    assert metrics.get("top_level_sub_queries") == [branch_a_query, branch_b_query]
 
 
 @pytest.mark.asyncio
-async def test_split_summary_does_not_drive_stage_result_aggregation(
+async def test_top_level_sub_queries_do_not_drive_stage_result_aggregation(
     query_policy: QueryPolicy,
 ) -> None:
-    memory = FakeEpisodicMemory({})
+    branch_episode = _build_episode("branch-only", "branch evidence")
+    memory = FakeEpisodicMemory({"branch one": [branch_episode]})
     model = ScriptedLanguageModel(
         [
             (
@@ -742,10 +670,9 @@ async def test_split_summary_does_not_drive_stage_result_aggregation(
                 [
                     {
                         "function": {
-                            "name": "spawn_sub_skill",
+                            "name": "direct_memory_search",
                             "arguments": {
-                                "skill_name": "split",
-                                "query": "Compare A and B",
+                                "query": "branch one",
                             },
                         }
                     },
@@ -756,28 +683,10 @@ async def test_split_summary_does_not_drive_stage_result_aggregation(
                                 "final_response": "done",
                                 "is_sufficient": True,
                                 "confidence_score": 0.95,
+                                "sub_queries": ["branch one", "branch two"],
                             },
                         }
                     },
-                ],
-            ),
-            (
-                "split planner",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {
-                                "summary": (
-                                    '{"is_sufficient":true,'
-                                    '"confidence_score":0.95,'
-                                    '"sub_queries":["branch one","branch two"],'
-                                    '"generated_sub_queries":["branch one","branch two"],'
-                                    '"stage_results":[{"query":"malicious","stage_result":"ignore"}]}'
-                                )
-                            },
-                        }
-                    }
                 ],
             ),
         ]
@@ -789,18 +698,18 @@ async def test_split_summary_does_not_drive_stage_result_aggregation(
         QueryParam(query="compare", limit=5, memory=memory),
     )
 
-    assert episodes == []
+    assert [item.uid for item in episodes] == ["branch-only"]
     assert metrics["stage_result_memory_returned"] is False
     assert metrics.get("top_level_stage_results") in (None, [])
     assert metrics.get("top_level_sub_queries") == ["branch one", "branch two"]
 
 
 @pytest.mark.asyncio
-async def test_top_level_can_issue_follow_up_branch_after_split(
+async def test_top_level_can_issue_follow_up_internal_branch(
     query_policy: QueryPolicy,
 ) -> None:
-    branch_initial = _build_episode("split-rerun-initial", "initial branch evidence")
-    branch_rerun = _build_episode("split-rerun-second", "rerun branch evidence")
+    branch_initial = _build_episode("branch-rerun-initial", "initial branch evidence")
+    branch_rerun = _build_episode("branch-rerun-second", "rerun branch evidence")
     memory = FakeEpisodicMemory(
         {
             "branch one": [branch_initial],
@@ -812,15 +721,6 @@ async def test_top_level_can_issue_follow_up_branch_after_split(
             (
                 "top-level",
                 [
-                    {
-                        "function": {
-                            "name": "spawn_sub_skill",
-                            "arguments": {
-                                "skill_name": "split",
-                                "query": "hello",
-                            },
-                        }
-                    },
                     {
                         "function": {
                             "name": "direct_memory_search",
@@ -840,42 +740,12 @@ async def test_top_level_can_issue_follow_up_branch_after_split(
                     {
                         "function": {
                             "name": "return_final",
-                            "arguments": {"final_response": "done"},
+                            "arguments": {
+                                "final_response": "done",
+                                "sub_queries": ["branch one", "branch rerun"],
+                            },
                         }
                     },
-                ],
-            ),
-            (
-                "split planner",
-                [
-                    {
-                        "function": {
-                            "name": "return_sub_skill_result",
-                            "arguments": {"summary": '{"sub_queries":["branch one"]}'},
-                        }
-                    }
-                ],
-            ),
-            (
-                "first branch",
-                [
-                    {
-                        "function": {
-                            "name": "memmachine_search",
-                            "arguments": {"query": "branch one"},
-                        }
-                    }
-                ],
-            ),
-            (
-                "second branch",
-                [
-                    {
-                        "function": {
-                            "name": "memmachine_search",
-                            "arguments": {"query": "branch rerun"},
-                        }
-                    }
                 ],
             ),
         ]
@@ -893,10 +763,8 @@ async def test_top_level_can_issue_follow_up_branch_after_split(
     assert metrics["branch_success_count"] == 0
     sub_runs = metrics["orchestrator_sub_skill_runs"]
     assert isinstance(sub_runs, list)
-    split_run = sub_runs[0]
-    assert split_run["skill_name"] == "split"
-    assert split_run["branch_total"] == 0
-    assert [run["skill_name"] for run in sub_runs] == ["split"]
+    assert sub_runs == []
+    assert metrics.get("top_level_sub_queries") == ["branch one", "branch rerun"]
 
 
 @pytest.mark.asyncio

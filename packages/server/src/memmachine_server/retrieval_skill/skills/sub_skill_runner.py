@@ -77,8 +77,6 @@ class SubSkillRunner:
         memory_tool: SkillToolBase,
         session_model: SkillSessionModelProtocol | None = None,
         spec_root: Path | None = None,
-        split_parallel_cap: int = 5,
-        split_branch_retry_limit: int = 1,
         native_skill_bundle_root: str | None = None,
     ) -> None:
         """Initialize sub-skill runtime dependencies."""
@@ -91,8 +89,6 @@ class SubSkillRunner:
         self._spec_root = spec_root or (
             Path(__file__).resolve().parent / "specs" / "sub_skills"
         )
-        self._split_parallel_cap = max(1, split_parallel_cap)
-        self._split_branch_retry_limit = max(0, split_branch_retry_limit)
         self._native_skill_bundle_root = native_skill_bundle_root
 
     @staticmethod

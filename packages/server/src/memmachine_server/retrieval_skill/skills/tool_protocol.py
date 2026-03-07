@@ -17,10 +17,7 @@ TOP_LEVEL_TOOL_NAMES = (
     "direct_memory_search",
     "return_final",
 )
-CANONICAL_SUB_SKILL_NAMES = (
-    "coq",
-    "split",
-)
+CANONICAL_SUB_SKILL_NAMES = ("coq",)
 SUB_SKILL_TOOL_NAMES = (
     "memmachine_search",
     "return_sub_skill_result",

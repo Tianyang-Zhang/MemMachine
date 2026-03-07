@@ -87,10 +87,6 @@ class RetrieveSkill(SkillToolBase):
         self._sub_skill_timeout_seconds = int(
             self._extra_params.get("sub_skill_timeout_seconds", 120)
         )
-        self._split_parallel_cap = int(self._extra_params.get("split_parallel_cap", 5))
-        self._split_branch_retry_limit = int(
-            self._extra_params.get("split_branch_retry_limit", 1)
-        )
         self._sub_skill_episode_line_cap = int(
             self._extra_params.get("sub_skill_episode_line_cap", 120)
         )
@@ -164,8 +160,6 @@ class RetrieveSkill(SkillToolBase):
             memory_tool=self._memory_tool,
             session_model=self._session_model,
             spec_root=self._sub_skill_spec_root,
-            split_parallel_cap=self._split_parallel_cap,
-            split_branch_retry_limit=self._split_branch_retry_limit,
             native_skill_bundle_root=self._native_skill_bundle_root,
         )
 
@@ -754,8 +748,6 @@ class RetrieveSkill(SkillToolBase):
     def _selected_skill_name_for_skill(skill_name: str) -> str:
         if skill_name == "coq":
             return "ChainOfQuerySkill"
-        if skill_name == "split":
-            return "SplitSkill"
         return "MemMachineSkill"
 
     def _build_stage_result_memory_episodes(
@@ -1292,6 +1284,18 @@ class RetrieveSkill(SkillToolBase):
                         ),
                         fallback_reason="invalid_tool_call",
                     )
+                retrieval_actions_seen = any(
+                    call.tool_name in {"direct_memory_search", "spawn_sub_skill"}
+                    for call in session.tool_calls
+                )
+                if not retrieval_actions_seen and not session.merged_episodes:
+                    self._raise_contract_error(
+                        why=(
+                            "return_final emitted before any retrieval action. "
+                            "Run direct_memory_search or spawn_sub_skill first."
+                        ),
+                        fallback_reason="invalid_tool_call",
+                    )
 
                 final_response = (
                     action.final_response.strip()
@@ -1584,10 +1588,13 @@ class RetrieveSkill(SkillToolBase):
                 metrics.get("top_level_sub_queries") or metrics.get("stage_sub_queries")
             )
             stage_result_memory_episodes: list[Episode] = []
-            if self._stage_result_gate_passes(
-                is_sufficient=bool(metrics.get("top_level_is_sufficient", False)),
-                confidence_score=top_level_confidence,
-            ) and top_level_stage_results:
+            if (
+                self._stage_result_gate_passes(
+                    is_sufficient=bool(metrics.get("top_level_is_sufficient", False)),
+                    confidence_score=top_level_confidence,
+                )
+                and top_level_stage_results
+            ):
                 stage_result_memory_episodes = self._build_stage_result_memory_episodes(
                     query=query,
                     stage_results=top_level_stage_results,

@@ -242,11 +242,12 @@ def test_service_locator_rejects_legacy_skill_routes() -> None:
     session_model = ScriptedSkillSessionModel(model)
     for skill_name in [
         "MemMachineSkill",
-        "SplitSkill",
         "ChainOfQuerySkill",
         "ToolSelectSkill",
     ]:
-        with pytest.raises(ValueError, match="only supports skill_name='RetrieveSkill'"):
+        with pytest.raises(
+            ValueError, match="only supports skill_name='RetrieveSkill'"
+        ):
             _ = create_retrieval_skill(
                 model=model,
                 reranker=reranker,
@@ -291,4 +292,4 @@ def test_service_locator_uses_provider_factory_from_retrieval_conf(
     factory.assert_called_once_with(model=model, retrieval_conf=conf)
     assert skill._global_timeout_seconds == 180
     assert skill._max_combined_calls == 10
-    assert skill._available_sub_skills == ["coq", "split"]
+    assert skill._available_sub_skills == ["coq"]
