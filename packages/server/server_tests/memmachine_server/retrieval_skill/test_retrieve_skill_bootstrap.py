@@ -267,6 +267,32 @@ async def test_retrieve_skill_bootstrap_invalid_entry_uses_fallback(
 
 
 @pytest.mark.asyncio
+async def test_retrieve_skill_attaches_all_skill_bundles_on_session_start(
+    query_policy: QueryPolicy,
+) -> None:
+    episode = _build_episode(uid="bundle-check")
+    memory = FakeEpisodicMemory({"hello": [episode]})
+    model = DummyLanguageModel("no-tool-calls")
+    session_model = ScriptedSkillSessionModel(model)
+    skill = create_retrieval_skill(
+        model=model,
+        reranker=DummyReranker(),
+        skill_session_model=session_model,
+    )
+
+    _, _ = await skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert len(session_model.provider_skill_bundles_history) == 1
+    bundle_names = [
+        bundle.name for bundle in session_model.provider_skill_bundles_history[0]
+    ]
+    assert bundle_names == ["retrieve-skill", "coq", "split"]
+
+
+@pytest.mark.asyncio
 async def test_retrieve_skill_fallback_records_provider_raw_error_response(
     query_policy: QueryPolicy,
 ) -> None:

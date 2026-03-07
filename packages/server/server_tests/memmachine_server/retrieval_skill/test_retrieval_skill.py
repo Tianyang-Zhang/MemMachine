@@ -236,7 +236,7 @@ def test_service_locator_requires_openai_or_explicit_session_model() -> None:
         )
 
 
-def test_service_locator_ignores_legacy_skill_routes() -> None:
+def test_service_locator_rejects_legacy_skill_routes() -> None:
     model = DummyLanguageModel("MemMachineSkill")
     reranker = DummyReranker()
     session_model = ScriptedSkillSessionModel(model)
@@ -245,15 +245,22 @@ def test_service_locator_ignores_legacy_skill_routes() -> None:
         "SplitSkill",
         "ChainOfQuerySkill",
         "ToolSelectSkill",
-        "RetrieveSkill",
     ]:
-        skill = create_retrieval_skill(
-            model=model,
-            reranker=reranker,
-            skill_name=skill_name,
-            skill_session_model=session_model,
-        )
-        assert skill.skill_name == "RetrieveSkill"
+        with pytest.raises(ValueError, match="only supports skill_name='RetrieveSkill'"):
+            _ = create_retrieval_skill(
+                model=model,
+                reranker=reranker,
+                skill_name=skill_name,
+                skill_session_model=session_model,
+            )
+
+    skill = create_retrieval_skill(
+        model=model,
+        reranker=reranker,
+        skill_name="RetrieveSkill",
+        skill_session_model=session_model,
+    )
+    assert skill.skill_name == "RetrieveSkill"
 
 
 def test_service_locator_uses_provider_factory_from_retrieval_conf(

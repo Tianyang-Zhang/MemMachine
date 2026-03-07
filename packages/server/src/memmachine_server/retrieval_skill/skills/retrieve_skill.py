@@ -46,6 +46,7 @@ from memmachine_server.retrieval_skill.skills.sub_skill_runner import (
     SubSkillRunner,
 )
 from memmachine_server.retrieval_skill.skills.tool_protocol import (
+    CANONICAL_SUB_SKILL_NAMES,
     TOP_LEVEL_TOOL_NAMES,
     parse_top_level_tool_call,
     top_level_tool_schemas,
@@ -61,6 +62,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_RETRIEVE_SKILL_SPEC = (
     Path(__file__).resolve().parent / "specs" / "top_level" / "retrieve_skill.md"
 )
+DEFAULT_SUB_SKILL_SPEC_ROOT = Path(__file__).resolve().parent / "specs" / "sub_skills"
 
 
 class RetrieveSkill(SkillToolBase):
@@ -105,16 +107,32 @@ class RetrieveSkill(SkillToolBase):
             self._stage_result_confidence_threshold = float(raw_stage_threshold)
         else:
             self._stage_result_confidence_threshold = 0.9
-        raw_available_sub_skills = list(
-            self._extra_params.get("available_sub_skills", ["coq", "split"])
+        raw_available_sub_skills = self._extra_params.get(
+            "available_sub_skills",
+            list(CANONICAL_SUB_SKILL_NAMES),
         )
-        self._available_sub_skills = [
+        if not isinstance(raw_available_sub_skills, list) or any(
+            not isinstance(skill_name, str) for skill_name in raw_available_sub_skills
+        ):
+            raise ValueError(
+                "RetrieveSkill extra_params['available_sub_skills'] must be a list[str]."
+            )
+        invalid_sub_skills = [
             skill_name
             for skill_name in raw_available_sub_skills
-            if self._normalize_sub_skill_name(skill_name) in {"coq", "split"}
+            if skill_name not in CANONICAL_SUB_SKILL_NAMES
         ]
+        if invalid_sub_skills:
+            raise ValueError(
+                "RetrieveSkill extra_params['available_sub_skills'] must only "
+                f"contain {list(CANONICAL_SUB_SKILL_NAMES)}. "
+                f"Invalid: {invalid_sub_skills}"
+            )
+        self._available_sub_skills = list(dict.fromkeys(raw_available_sub_skills))
         if not self._available_sub_skills:
-            self._available_sub_skills = ["coq", "split"]
+            raise ValueError(
+                "RetrieveSkill extra_params['available_sub_skills'] cannot be empty."
+            )
         fallback_name = self._extra_params.get("fallback_tool_name", "MemMachineSkill")
         self._memory_tool = self._find_child_tool(fallback_name)
         if self._memory_tool is None:
@@ -123,9 +141,10 @@ class RetrieveSkill(SkillToolBase):
             )
 
         raw_sub_skill_root = self._extra_params.get("sub_skill_spec_root")
-        sub_skill_root: Path | None = None
-        if raw_sub_skill_root is not None:
-            sub_skill_root = Path(str(raw_sub_skill_root))
+        if raw_sub_skill_root is None:
+            self._sub_skill_spec_root = DEFAULT_SUB_SKILL_SPEC_ROOT
+        else:
+            self._sub_skill_spec_root = Path(str(raw_sub_skill_root))
 
         raw_session_model = self._extra_params.get("skill_session_model")
         if raw_session_model is None:
@@ -144,7 +163,7 @@ class RetrieveSkill(SkillToolBase):
             model=self._model,
             memory_tool=self._memory_tool,
             session_model=self._session_model,
-            spec_root=sub_skill_root,
+            spec_root=self._sub_skill_spec_root,
             split_parallel_cap=self._split_parallel_cap,
             split_branch_retry_limit=self._split_branch_retry_limit,
             native_skill_bundle_root=self._native_skill_bundle_root,
@@ -179,23 +198,47 @@ class RetrieveSkill(SkillToolBase):
                 return tool
         return None
 
-    @staticmethod
-    def _normalize_sub_skill_name(skill_name: str) -> str:
-        return skill_name.strip().replace("-", "_").lower()
-
     def _native_top_level_skill_bundles(self) -> list[ProviderSkillBundle]:
         markdown = self._spec.policy_markdown or self._spec.description
-        bundle = materialize_provider_skill_bundle(
-            name=self._spec.name,
-            description=self._spec.description,
-            skill_markdown=markdown,
-            bundle_root=(
-                str(self._native_skill_bundle_root)
-                if self._native_skill_bundle_root is not None
-                else None
-            ),
-        )
-        return [bundle]
+        bundles = [
+            materialize_provider_skill_bundle(
+                name=self._spec.name,
+                description=self._spec.description,
+                skill_markdown=markdown,
+                bundle_root=(
+                    str(self._native_skill_bundle_root)
+                    if self._native_skill_bundle_root is not None
+                    else None
+                ),
+            )
+        ]
+
+        # Attach top-level and all decomposition bundles in one session.
+        for sub_skill_name in CANONICAL_SUB_SKILL_NAMES:
+            sub_skill_spec = load_skill_spec(
+                self._sub_skill_spec_root / f"{sub_skill_name}.md"
+            )
+            if sub_skill_spec.kind != "sub-skill":
+                raise ValueError(
+                    "Sub-skill bundle spec must declare kind='sub-skill': "
+                    f"{sub_skill_name}"
+                )
+            sub_skill_markdown = (
+                sub_skill_spec.policy_markdown or sub_skill_spec.description
+            )
+            bundles.append(
+                materialize_provider_skill_bundle(
+                    name=sub_skill_spec.name,
+                    description=sub_skill_spec.description,
+                    skill_markdown=sub_skill_markdown,
+                    bundle_root=(
+                        str(self._native_skill_bundle_root)
+                        if self._native_skill_bundle_root is not None
+                        else None
+                    ),
+                )
+            )
+        return bundles
 
     def _new_session_state(self, query: QueryParam) -> TopLevelSkillSessionState:
         session = TopLevelSkillSessionState.new(
@@ -616,8 +659,7 @@ class RetrieveSkill(SkillToolBase):
                     selected_episode_indices
                 )
 
-        normalized_skill_name = skill_name.strip().replace("-", "_").lower()
-        if normalized_skill_name == "coq":
+        if skill_name == "coq":
             stage_results = self._normalize_stage_results(
                 summary_payload.get("stage_results")
             )
@@ -710,10 +752,9 @@ class RetrieveSkill(SkillToolBase):
 
     @staticmethod
     def _selected_skill_name_for_skill(skill_name: str) -> str:
-        normalized = skill_name.strip().replace("-", "_").lower()
-        if normalized == "coq":
+        if skill_name == "coq":
             return "ChainOfQuerySkill"
-        if normalized == "split":
+        if skill_name == "split":
             return "SplitSkill"
         return "MemMachineSkill"
 
@@ -946,28 +987,7 @@ class RetrieveSkill(SkillToolBase):
                         why="spawn_sub_skill requires skill_name.",
                         fallback_reason="invalid_tool_call",
                     )
-                normalized_skill_name = self._normalize_sub_skill_name(
-                    action.skill_name
-                )
-                if normalized_skill_name == "direct_memory":
-                    session.record_event(
-                        actor="top-level",
-                        event_type="direct_memory_routed_as_tool",
-                        detail=(
-                            "spawn_sub_skill(skill_name=direct_memory) mapped to "
-                            "direct_memory_search tool execution."
-                        ),
-                    )
-                    return await _execute_direct_memory_search(
-                        {
-                            "query": action.query or query.query,
-                            "rationale": action.rationale,
-                        }
-                    )
-                if normalized_skill_name not in {
-                    self._normalize_sub_skill_name(skill_name)
-                    for skill_name in self._available_sub_skills
-                }:
+                if action.skill_name not in self._available_sub_skills:
                     self._raise_contract_error(
                         why=(
                             "spawn_sub_skill skill_name not allowed: "
@@ -1451,7 +1471,10 @@ class RetrieveSkill(SkillToolBase):
                     f"state: {session.prompt_snapshot()}\n"
                     "choose tool calls to complete retrieval"
                 ),
-                tools=top_level_tool_schemas(self._spec.allowed_tools),
+                tools=top_level_tool_schemas(
+                    self._spec.allowed_tools,
+                    self._available_sub_skills,
+                ),
                 tool_registry=tool_registry,
                 max_turns=self._spec.max_steps,
                 timeout_seconds=float(self._global_timeout_seconds),

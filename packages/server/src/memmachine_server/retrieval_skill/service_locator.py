@@ -1,7 +1,5 @@
 """Factory helpers for retrieval-skill construction."""
 
-import logging
-
 from memmachine_server.common.configuration.retrieval_config import RetrievalAgentConf
 from memmachine_server.common.language_model import (
     LanguageModel,
@@ -17,8 +15,6 @@ from memmachine_server.retrieval_skill.common.skill_api import (
 from memmachine_server.retrieval_skill.skills.retrieve_skill import RetrieveSkill
 from memmachine_server.retrieval_skill.subskills import MemMachineSkill
 
-logger = logging.getLogger(__name__)
-
 
 def create_retrieval_skill(
     *,
@@ -30,9 +26,9 @@ def create_retrieval_skill(
 ) -> SkillToolBase:
     """Create the top-level retrieval skill orchestrator."""
     if skill_name != "RetrieveSkill":
-        logger.warning(
-            "Ignoring legacy retrieval skill_name '%s'; using RetrieveSkill.",
-            skill_name,
+        raise ValueError(
+            "create_retrieval_skill only supports skill_name='RetrieveSkill'. "
+            f"Received: {skill_name!r}"
         )
 
     memory_skill = MemMachineSkill(

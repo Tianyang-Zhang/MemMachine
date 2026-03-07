@@ -206,7 +206,7 @@ async def test_tool_protocol_direct_memory_and_return_final(
 
 
 @pytest.mark.asyncio
-async def test_spawn_sub_skill_memory_search_and_state_tracking(
+async def test_direct_memory_search_and_state_tracking(
     query_policy: QueryPolicy,
 ) -> None:
     sub_episode = _build_episode("ep-sub", "sub evidence")
@@ -219,9 +219,8 @@ async def test_spawn_sub_skill_memory_search_and_state_tracking(
                 [
                     {
                         "function": {
-                            "name": "spawn_sub_skill",
+                            "name": "direct_memory_search",
                             "arguments": {
-                                "skill_name": "direct_memory",
                                 "query": "branch query",
                                 "rationale": "branch retrieval",
                             },
@@ -463,6 +462,42 @@ async def test_tool_protocol_invalid_action_triggers_fallback(
 
 
 @pytest.mark.asyncio
+async def test_legacy_direct_memory_sub_skill_name_is_rejected(
+    query_policy: QueryPolicy,
+) -> None:
+    fallback_episode = _build_episode("ep-direct-memory-legacy", "fallback")
+    memory = FakeEpisodicMemory({"hello": [fallback_episode]})
+    model = ScriptedLanguageModel(
+        [
+            (
+                "legacy tool payload",
+                [
+                    {
+                        "function": {
+                            "name": "spawn_sub_skill",
+                            "arguments": {
+                                "skill_name": "direct_memory",
+                                "query": "hello",
+                            },
+                        }
+                    }
+                ],
+            )
+        ]
+    )
+    retrieve_skill = _build_skill(model)
+
+    episodes, metrics = await retrieve_skill.do_query(
+        query_policy,
+        QueryParam(query="hello", limit=5, memory=memory),
+    )
+
+    assert [item.uid for item in episodes] == ["ep-direct-memory-legacy"]
+    assert metrics["fallback_trigger_reason"] == "invalid_tool_call"
+    assert metrics["skill_contract_error_code"] == "SKILL_CONTRACT_INVALID_OUTPUT"
+
+
+@pytest.mark.asyncio
 async def test_top_level_routes_split_branches_and_applies_final_rerank(
     query_policy: QueryPolicy,
 ) -> None:
@@ -491,9 +526,8 @@ async def test_top_level_routes_split_branches_and_applies_final_rerank(
                     },
                     {
                         "function": {
-                            "name": "spawn_sub_skill",
+                            "name": "direct_memory_search",
                             "arguments": {
-                                "skill_name": "direct_memory",
                                 "query": "branch direct",
                             },
                         }
@@ -614,18 +648,16 @@ async def test_split_sub_skill_accepts_v1_wrapped_branch_plan(
                     },
                     {
                         "function": {
-                            "name": "spawn_sub_skill",
+                            "name": "direct_memory_search",
                             "arguments": {
-                                "skill_name": "direct_memory",
                                 "query": branch_a_query,
                             },
                         }
                     },
                     {
                         "function": {
-                            "name": "spawn_sub_skill",
+                            "name": "direct_memory_search",
                             "arguments": {
-                                "skill_name": "direct_memory",
                                 "query": branch_b_query,
                             },
                         }
@@ -791,18 +823,16 @@ async def test_top_level_can_issue_follow_up_branch_after_split(
                     },
                     {
                         "function": {
-                            "name": "spawn_sub_skill",
+                            "name": "direct_memory_search",
                             "arguments": {
-                                "skill_name": "direct_memory",
                                 "query": "branch one",
                             },
                         }
                     },
                     {
                         "function": {
-                            "name": "spawn_sub_skill",
+                            "name": "direct_memory_search",
                             "arguments": {
-                                "skill_name": "direct_memory",
                                 "query": "branch rerun",
                             },
                         }
