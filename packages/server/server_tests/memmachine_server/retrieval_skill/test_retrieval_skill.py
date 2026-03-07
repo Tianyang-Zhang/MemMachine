@@ -168,6 +168,11 @@ async def test_memmachine_skill_returns_episodes(query_policy: QueryPolicy) -> N
 
     assert result == [episode]
     assert metrics["memory_search_called"] == 1
+    assert isinstance(metrics.get("memory_search_latency_seconds"), list)
+    assert len(metrics["memory_search_latency_seconds"]) == 1
+    assert float(metrics["memory_retrieval_time"]) >= float(
+        metrics["memory_search_latency_seconds"][0]
+    )
 
 
 @pytest.mark.asyncio
@@ -199,6 +204,8 @@ async def test_memmachine_skill_queries_long_term_memory_only(
 
     assert result == [episode]
     assert metrics["memory_search_called"] == 1
+    assert isinstance(metrics.get("memory_search_latency_seconds"), list)
+    assert len(metrics["memory_search_latency_seconds"]) == 1
     assert memory.calls == [
         {
             "query": "callback-query",

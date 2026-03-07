@@ -200,6 +200,8 @@ async def test_tool_protocol_direct_memory_and_return_final(
     assert direct_call["tool_name"] == "direct_memory_search"
     assert direct_call["raw_result"]["episodes_returned"] == 1
     assert direct_call["raw_result"]["query"] == "hello"
+    assert isinstance(direct_call["raw_result"]["wall_time_seconds"], float)
+    assert isinstance(direct_call["raw_result"]["memory_search_latency_seconds"], list)
     assert "episodes_human_readable" not in direct_call["raw_result"]
 
 

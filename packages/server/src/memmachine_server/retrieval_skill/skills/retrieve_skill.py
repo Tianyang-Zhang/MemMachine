@@ -1199,10 +1199,12 @@ class RetrieveSkill(SkillToolBase):
                     )
 
                 direct_query = action.query or query.query
+                tool_started = time.perf_counter()
                 episodes, perf_metrics = await self._memory_tool.do_query(
                     policy,
                     self._query_with_override(query, direct_query),
                 )
+                tool_elapsed_seconds = time.perf_counter() - tool_started
                 aggregated_metrics.update(
                     self._update_perf_metrics(perf_metrics, aggregated_metrics)
                 )
@@ -1220,7 +1222,25 @@ class RetrieveSkill(SkillToolBase):
                     "episodes_returned": len(episodes),
                     "query": direct_query,
                     "episodes_human_readable": episode_lines,
+                    "wall_time_seconds": tool_elapsed_seconds,
                 }
+                raw_reported_memory_time = perf_metrics.get("memory_retrieval_time")
+                if isinstance(raw_reported_memory_time, int | float) and not isinstance(
+                    raw_reported_memory_time,
+                    bool,
+                ):
+                    response_payload["reported_memory_retrieval_time"] = float(
+                        raw_reported_memory_time
+                    )
+                raw_search_latency_breakdown = perf_metrics.get(
+                    "memory_search_latency_seconds"
+                )
+                if isinstance(raw_search_latency_breakdown, list):
+                    response_payload["memory_search_latency_seconds"] = [
+                        float(item)
+                        for item in raw_search_latency_breakdown
+                        if isinstance(item, int | float) and not isinstance(item, bool)
+                    ]
                 session.record_tool_call(
                     tool_name="direct_memory_search",
                     arguments=direct_arguments,

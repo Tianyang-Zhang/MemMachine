@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 import httpx
@@ -110,6 +112,29 @@ class SkillSessionModelProtocol(Protocol):
 class SkillLanguageModel:
     """OpenAI Responses function-calling live session runner."""
 
+    _LOCAL_SHELL_ALLOWED_BASE_COMMANDS: ClassVar[set[str]] = {
+        "cat",
+        "echo",
+        "find",
+        "head",
+        "ls",
+        "pwd",
+        "rg",
+        "sed",
+        "tail",
+        "wc",
+    }
+    _LOCAL_SHELL_DISALLOWED_TOKENS: ClassVar[tuple[str, ...]] = (
+        ";",
+        "&&",
+        "||",
+        "|",
+        ">",
+        "<",
+        "$(",
+        "`",
+    )
+
     def __init__(self, params: SkillOpenAISessionLanguageModelParams) -> None:
         """Initialize runtime with OpenAI Responses client settings."""
         self._client = params.client
@@ -179,6 +204,10 @@ class SkillLanguageModel:
             tools=tools,
             provider_skill_bundles=provider_skill_bundles,
         )
+        resolved_tool_registry = self._resolve_tool_registry(
+            tool_registry=tool_registry,
+            resolved_tools=resolved_tools,
+        )
 
         while True:
             if turn_count >= max_turns:
@@ -228,7 +257,12 @@ class SkillLanguageModel:
                 for item in response_items
                 if str(item.get("type", "")) == "function_call"
             ]
-            if not function_calls:
+            shell_calls = [
+                item
+                for item in response_items
+                if self._is_actionable_shell_call(item)
+            ]
+            if not function_calls and not shell_calls:
                 return SkillRunResult(
                     final_response=raw_model_output.strip(),
                     raw_model_output=raw_model_output,
@@ -240,26 +274,45 @@ class SkillLanguageModel:
                     normalization_warnings=normalization_warnings,
                 )
 
-            executions = await self._execute_function_calls(
-                function_calls=function_calls,
-                tool_registry=tool_registry,
-            )
-            tool_executions.extend(executions)
-
             function_call_outputs: list[dict[str, object]] = []
-            for item in executions:
-                if item.call_id is None:
-                    raise SkillToolCallFormatError(
-                        "function_call item missing call_id for output callback."
-                    )
-                function_call_outputs.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": item.call_id,
-                        "output": self._serialize_tool_output(item.output),
-                    }
+            shell_call_outputs: list[dict[str, object]] = []
+
+            if function_calls:
+                function_executions = await self._execute_function_calls(
+                    function_calls=function_calls,
+                    tool_registry=resolved_tool_registry,
                 )
-            current_input.extend(function_call_outputs)
+                tool_executions.extend(function_executions)
+                for item in function_executions:
+                    if item.call_id is None:
+                        raise SkillToolCallFormatError(
+                            "function_call item missing call_id for output callback."
+                        )
+                    function_call_outputs.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": item.call_id,
+                            "output": self._serialize_tool_output(item.output),
+                        }
+                    )
+
+            if shell_calls:
+                shell_executions, shell_call_outputs = await self._execute_shell_calls(
+                    shell_calls=shell_calls
+                )
+                tool_executions.extend(shell_executions)
+
+            current_input = [*function_call_outputs, *shell_call_outputs]
+
+    @staticmethod
+    def _is_actionable_shell_call(item: dict[str, object]) -> bool:
+        if str(item.get("type", "")) != "shell_call":
+            return False
+        action = item.get("action")
+        if not isinstance(action, dict):
+            return False
+        commands = action.get("commands")
+        return isinstance(commands, list) and len(commands) > 0
 
     async def _execute_function_calls(
         self,
@@ -469,7 +522,12 @@ class SkillLanguageModel:
             for item in items:
                 if isinstance(item, dict):
                     item_type = str(item.get("type", ""))
-                    if item_type and item_type not in {"function_call", "reasoning"}:
+                    if item_type and item_type not in {
+                        "function_call",
+                        "reasoning",
+                        "shell_call",
+                        "message",
+                    }:
                         warnings.append(
                             f"unsupported_response_item_type:{item_type}"
                         )
@@ -481,7 +539,12 @@ class SkillLanguageModel:
         for item in items:
             if isinstance(item, dict):
                 item_type = str(item.get("type", ""))
-                if item_type and item_type not in {"function_call", "reasoning"}:
+                if item_type and item_type not in {
+                    "function_call",
+                    "reasoning",
+                    "shell_call",
+                    "message",
+                }:
                     warnings.append(f"unsupported_response_item_type:{item_type}")
                 normalized.append(item)
                 continue
@@ -513,6 +576,55 @@ class SkillLanguageModel:
                     item_dict["summary"] = summary
                 normalized.append(item_dict)
                 continue
+            if item_type == "shell_call":
+                dump_method = getattr(item, "model_dump", None)
+                if callable(dump_method):
+                    dumped = dump_method()
+                    if isinstance(dumped, dict):
+                        normalized.append(dumped)
+                        continue
+                action_obj = getattr(item, "action", None)
+                action: dict[str, object] = {}
+                if isinstance(action_obj, dict):
+                    action = {str(key): value for key, value in action_obj.items()}
+                else:
+                    action_dump = getattr(action_obj, "model_dump", None)
+                    if callable(action_dump):
+                        dumped_action = action_dump()
+                        if isinstance(dumped_action, dict):
+                            action = dumped_action
+                    if not action:
+                        commands = getattr(action_obj, "commands", None)
+                        timeout_ms = getattr(action_obj, "timeout_ms", None)
+                        max_output_length = getattr(
+                            action_obj, "max_output_length", None
+                        )
+                        if isinstance(commands, list):
+                            action["commands"] = commands
+                        if isinstance(timeout_ms, int):
+                            action["timeout_ms"] = timeout_ms
+                        if isinstance(max_output_length, int):
+                            action["max_output_length"] = max_output_length
+                        action["type"] = getattr(action_obj, "type", "exec")
+                normalized.append(
+                    {
+                        "type": "shell_call",
+                        "id": getattr(item, "id", None),
+                        "call_id": getattr(item, "call_id", None),
+                        "status": getattr(item, "status", None),
+                        "action": action,
+                    }
+                )
+                continue
+            if item_type == "message":
+                dump_method = getattr(item, "model_dump", None)
+                if callable(dump_method):
+                    dumped = dump_method()
+                    if isinstance(dumped, dict):
+                        normalized.append(dumped)
+                        continue
+                normalized.append({"type": "message"})
+                continue
             if item_type:
                 warnings.append(f"unsupported_response_item_type:{item_type}")
 
@@ -535,6 +647,202 @@ class SkillLanguageModel:
             except Exception:
                 return repr(response)
         return repr(response)
+
+    def _resolve_tool_registry(
+        self,
+        *,
+        tool_registry: dict[str, ToolHandler],
+        resolved_tools: list[dict[str, object]],
+    ) -> dict[str, ToolHandler]:
+        _ = resolved_tools
+        return dict(tool_registry)
+
+    async def _execute_shell_calls(
+        self,
+        *,
+        shell_calls: list[dict[str, object]],
+    ) -> tuple[list[SkillToolExecution], list[dict[str, object]]]:
+        executions: list[SkillToolExecution] = []
+        outputs: list[dict[str, object]] = []
+        for raw_call in shell_calls:
+            (
+                call_id,
+                commands,
+                timeout_ms,
+                max_output_length,
+                cwd,
+            ) = self._parse_shell_call(raw_call)
+            command_results: list[dict[str, object]] = []
+            for command in commands:
+                result = await self._run_local_shell_command(
+                    command=command,
+                    timeout_ms=timeout_ms,
+                    max_output_length=max_output_length,
+                    cwd=cwd,
+                )
+                command_results.append(result)
+            shell_output_item = {
+                "type": "shell_call_output",
+                "call_id": call_id,
+                "output": command_results,
+            }
+            outputs.append(shell_output_item)
+            executions.append(
+                SkillToolExecution(
+                    call_id=call_id,
+                    name="shell_call",
+                    arguments={
+                        "commands": commands,
+                        "timeout_ms": timeout_ms,
+                        "max_output_length": max_output_length,
+                        "cwd": cwd,
+                    },
+                    output={"output": command_results},
+                )
+            )
+        return executions, outputs
+
+    def _parse_shell_call(
+        self,
+        raw_call: object,
+    ) -> tuple[str, list[str], int, int, str | None]:
+        if not isinstance(raw_call, dict):
+            raise SkillToolCallFormatError("shell_call entry must be an object.")
+        if raw_call.get("type") != "shell_call":
+            raise SkillToolCallFormatError("Tool call entry must have type=shell_call.")
+
+        raw_call_id = raw_call.get("call_id", raw_call.get("id"))
+        if not isinstance(raw_call_id, str) or not raw_call_id.strip():
+            raise SkillToolCallFormatError("shell_call missing call identifier.")
+        call_id = raw_call_id.strip()
+
+        raw_action = raw_call.get("action")
+        if not isinstance(raw_action, dict):
+            raise SkillToolCallFormatError("shell_call missing action object.")
+        action_type = raw_action.get("type")
+        if action_type != "exec":
+            raise SkillToolCallFormatError(
+                f"Unsupported shell action type: {action_type!r}"
+            )
+
+        raw_commands = raw_action.get("commands")
+        if not isinstance(raw_commands, list):
+            raise SkillToolCallFormatError(
+                "shell_call action.commands must be an array."
+            )
+        commands = [
+            command.strip()
+            for command in raw_commands
+            if isinstance(command, str) and command.strip()
+        ]
+        if not commands:
+            raise SkillToolCallFormatError("shell_call has no executable commands.")
+
+        timeout_ms_raw = raw_action.get("timeout_ms", 15_000)
+        timeout_ms = timeout_ms_raw if isinstance(timeout_ms_raw, int) else 15_000
+        timeout_ms = max(1_000, min(timeout_ms, 120_000))
+
+        max_output_length_raw = raw_action.get("max_output_length", 6_000)
+        max_output_length = (
+            max_output_length_raw if isinstance(max_output_length_raw, int) else 6_000
+        )
+        max_output_length = max(512, min(max_output_length, 50_000))
+
+        cwd: str | None = None
+        raw_cwd = raw_action.get("cwd")
+        if isinstance(raw_cwd, str) and raw_cwd.strip():
+            cwd = raw_cwd.strip()
+
+        return call_id, commands, timeout_ms, max_output_length, cwd
+
+    async def _run_local_shell_command(
+        self,
+        *,
+        command: str,
+        timeout_ms: int,
+        max_output_length: int,
+        cwd: str | None,
+    ) -> dict[str, object]:
+        if not self._is_allowed_local_shell_command(command):
+            return {
+                "stdout": "",
+                "stderr": (
+                    "command not allowed by local shell policy: "
+                    f"{command}. Allowed base commands: "
+                    f"{sorted(self._LOCAL_SHELL_ALLOWED_BASE_COMMANDS)}"
+                ),
+                "outcome": {"type": "exit", "exit_code": 126},
+            }
+
+        resolved_cwd = Path.cwd()
+        if isinstance(cwd, str) and cwd.strip():
+            candidate = Path(cwd.strip()).expanduser()
+            if candidate.exists() and candidate.is_dir():
+                resolved_cwd = candidate
+            else:
+                return {
+                    "stdout": "",
+                    "stderr": f"invalid cwd for local shell command: {candidate}",
+                    "outcome": {"type": "exit", "exit_code": 2},
+                }
+
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(resolved_cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as err:
+            return {
+                "stdout": "",
+                "stderr": (
+                    f"failed to start local shell command ({type(err).__name__}): {err}"
+                ),
+                "outcome": {"type": "exit", "exit_code": 1},
+            }
+
+        timeout_seconds = timeout_ms / 1000
+        timed_out = False
+        try:
+            stdout_raw, stderr_raw = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout_seconds,
+            )
+        except TimeoutError:
+            timed_out = True
+            process.kill()
+            stdout_raw, stderr_raw = await process.communicate()
+
+        stdout = stdout_raw.decode("utf-8", errors="replace")
+        stderr = stderr_raw.decode("utf-8", errors="replace")
+        if len(stdout) > max_output_length:
+            stdout = f"{stdout[:max_output_length]}...[truncated]"
+        if len(stderr) > max_output_length:
+            stderr = f"{stderr[:max_output_length]}...[truncated]"
+
+        if timed_out:
+            return {
+                "stdout": stdout,
+                "stderr": stderr,
+                "outcome": {"type": "timeout"},
+            }
+        return {
+            "stdout": stdout,
+            "stderr": stderr,
+            "outcome": {"type": "exit", "exit_code": int(process.returncode or 0)},
+        }
+
+    def _is_allowed_local_shell_command(self, command: str) -> bool:
+        if any(token in command for token in self._LOCAL_SHELL_DISALLOWED_TOKENS):
+            return False
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False
+        if not parts:
+            return False
+        return parts[0] in self._LOCAL_SHELL_ALLOWED_BASE_COMMANDS
 
     @staticmethod
     def serialize_object_for_diagnostics(
@@ -568,6 +876,11 @@ class SkillLanguageModel:
                 "runtime yet; skipping provider skill attachment.",
                 self._native_skill_environment,
             )
+            return list(tools)
+        has_shell_tool = any(
+            isinstance(tool, dict) and tool.get("type") == "shell" for tool in tools
+        )
+        if has_shell_tool:
             return list(tools)
         shell_tool: dict[str, object] = {
             "type": "shell",

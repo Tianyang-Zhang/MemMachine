@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -283,6 +284,26 @@ class SubSkillRunner:
                     cached_from_query = detail.get("cached_from_query")
                     if isinstance(cached_from_query, str) and cached_from_query.strip():
                         call_arguments["cached_from_query"] = cached_from_query
+                    raw_wall_time = detail.get("wall_time_seconds")
+                    if isinstance(raw_wall_time, int | float) and not isinstance(
+                        raw_wall_time, bool
+                    ):
+                        call_arguments["wall_time_seconds"] = float(raw_wall_time)
+                    raw_reported_time = detail.get("reported_memory_retrieval_time")
+                    if isinstance(raw_reported_time, int | float) and not isinstance(
+                        raw_reported_time, bool
+                    ):
+                        call_arguments["reported_memory_retrieval_time"] = float(
+                            raw_reported_time
+                        )
+                    raw_breakdown = detail.get("memory_search_latency_seconds")
+                    if isinstance(raw_breakdown, list):
+                        call_arguments["memory_search_latency_seconds"] = [
+                            float(item)
+                            for item in raw_breakdown
+                            if isinstance(item, int | float)
+                            and not isinstance(item, bool)
+                        ]
                 call_arguments["episodes_human_readable"] = episodes_human_readable
                 result_summary = f"episodes={episodes_returned}"
                 if cached:
@@ -380,19 +401,37 @@ class SubSkillRunner:
                 cached_from_query = matched_cache.get("query")
                 if not isinstance(cached_from_query, str):
                     cached_from_query = None
+                tool_elapsed_seconds = 0.0
+                reported_memory_retrieval_time = 0.0
+                search_latency_breakdown: list[float] = []
             else:
+                tool_started = time.perf_counter()
                 next_param = self._query_with_override(query, next_query)
                 episodes, memory_metrics = await self._memory_tool.do_query(
                     policy, next_param
+                )
+                tool_elapsed_seconds = time.perf_counter() - tool_started
+                reported_memory_retrieval_time = self._metric_as_float(
+                    memory_metrics,
+                    "memory_retrieval_time",
+                )
+                raw_search_latency_breakdown = memory_metrics.get(
+                    "memory_search_latency_seconds"
+                )
+                search_latency_breakdown = (
+                    [
+                        float(item)
+                        for item in raw_search_latency_breakdown
+                        if isinstance(item, int | float) and not isinstance(item, bool)
+                    ]
+                    if isinstance(raw_search_latency_breakdown, list)
+                    else []
                 )
                 memory_search_called += self._metric_as_int(
                     memory_metrics,
                     "memory_search_called",
                 )
-                memory_retrieval_time += self._metric_as_float(
-                    memory_metrics,
-                    "memory_retrieval_time",
-                )
+                memory_retrieval_time += reported_memory_retrieval_time
                 collected_episodes.extend(episodes)
                 cached_query_results.append(
                     {
@@ -414,6 +453,9 @@ class SubSkillRunner:
                     "episodes_human_readable": episode_lines,
                     "cached": cached,
                     "cached_from_query": cached_from_query,
+                    "wall_time_seconds": tool_elapsed_seconds,
+                    "reported_memory_retrieval_time": reported_memory_retrieval_time,
+                    "memory_search_latency_seconds": search_latency_breakdown,
                 }
             )
             response: dict[str, object] = {
@@ -421,6 +463,9 @@ class SubSkillRunner:
                 "query": next_query,
                 "cached": cached,
                 "episodes_human_readable": episode_lines,
+                "wall_time_seconds": tool_elapsed_seconds,
+                "reported_memory_retrieval_time": reported_memory_retrieval_time,
+                "memory_search_latency_seconds": search_latency_breakdown,
             }
             if cached_from_query:
                 response["cached_from_query"] = cached_from_query
