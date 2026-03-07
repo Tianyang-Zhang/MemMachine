@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -186,6 +187,19 @@ class SubSkillRunner:
                 fallback_trigger_reason=fallback_reason,
             ),
         )
+
+    @staticmethod
+    def _format_language_model_error(err: SkillLanguageModelError) -> str:
+        diagnostics = getattr(err, "diagnostics", None)
+        if not isinstance(diagnostics, dict) or not diagnostics:
+            return str(err)
+        try:
+            encoded = json.dumps(diagnostics, default=str)
+        except Exception:
+            encoded = repr(diagnostics)
+        if len(encoded) > 4000:
+            encoded = f"{encoded[:4000]}...[truncated]"
+        return f"{err} diagnostics={encoded}"
 
     def _query_with_override(self, query: QueryParam, text: str) -> QueryParam:
         next_query = query.model_copy()
@@ -452,7 +466,10 @@ class SubSkillRunner:
             )
         except SkillLanguageModelError as err:
             self._raise_invalid_output(
-                why=f"Sub-skill session runtime failed: {err}",
+                why=(
+                    "Sub-skill session runtime failed: "
+                    f"{self._format_language_model_error(err)}"
+                ),
                 fallback_reason="invalid_sub_skill_output",
             )
 

@@ -2,7 +2,7 @@
 name: retrieve-skill
 version: v1
 kind: top-level
-description: "Top-level orchestrator policy for markdown-guided retrieval skill flow."
+description: "Top-level retrieval skill that finds memories relevant to the user query by orchestrating direct search and decomposition sub-skills."
 route_name: retrieve-skill
 timeout_seconds: 180
 max_return_len: 10000
@@ -25,9 +25,18 @@ required_sections:
 
 ## Intent
 
-Act as the top-level retrieval orchestrator. Keep full state ownership for the
-entire query lifecycle, including all sub-skill outputs and direct memory
-searches.
+Act as the top-level retrieval orchestrator for MemMachine.
+
+Primary objective: retrieve memory episodes that are related to the user query
+and return an evidence-grounded answer from those memories.
+
+Assume no external MemMachine knowledge by default:
+- Treat MemMachine as a memory store that can be searched via tools.
+- Use `direct_memory_search` for direct memory lookup.
+- Use `spawn_sub_skill` (`coq` or `split`) only when decomposition helps
+  retrieval quality.
+- Keep full state ownership for the entire query lifecycle, including
+  sub-skill outputs and direct memory searches.
 
 ## Rules
 

@@ -9,6 +9,7 @@ import pytest
 from memmachine_server.common.language_model import (
     ProviderSkillBundle,
     SkillLanguageModel,
+    SkillLanguageModelError,
     SkillOpenAISessionLanguageModelParams,
     SkillSessionLimitError,
     SkillToolNotFoundError,
@@ -269,3 +270,31 @@ async def test_openai_live_session_attaches_local_skills_when_enabled(
     assert len(skills) == 1
     assert skills[0]["name"] == "retrieve-skill"
     assert skills[0]["path"] == str(skill_dir)
+
+
+@pytest.mark.asyncio
+async def test_openai_live_session_surfaces_error_diagnostics(
+    mock_async_openai_client: Any,
+) -> None:
+    mock_async_openai_client.responses.create.side_effect = openai.OpenAIError(
+        "non-retryable failure"
+    )
+    model = SkillLanguageModel(
+        SkillOpenAISessionLanguageModelParams(
+            client=mock_async_openai_client,
+            model="gpt-5",
+        )
+    )
+
+    with pytest.raises(SkillLanguageModelError) as exc_info:
+        await model.run_live_session(
+            system_prompt="sys",
+            user_prompt="hello",
+            tools=[],
+            tool_registry={},
+        )
+
+    diagnostics = exc_info.value.diagnostics
+    assert diagnostics.get("provider") == "openai"
+    assert diagnostics.get("operation") == "responses.create"
+    assert diagnostics.get("error_type") == "OpenAIError"

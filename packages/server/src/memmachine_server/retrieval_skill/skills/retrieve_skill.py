@@ -231,6 +231,59 @@ class RetrieveSkill(SkillToolBase):
         ]
         return metrics
 
+    @staticmethod
+    def _serialize_diagnostic_object(
+        payload: object,
+        *,
+        max_chars: int = 20000,
+    ) -> str:
+        try:
+            serialized = json.dumps(payload, default=str)
+        except Exception:
+            serialized = repr(payload)
+        if len(serialized) <= max_chars:
+            return serialized
+        return f"{serialized[:max_chars]}...[truncated]"
+
+    def _record_error_diagnostics(
+        self,
+        *,
+        session: TopLevelSkillSessionState,
+        aggregated_metrics: dict[str, Any],
+        err: Exception,
+        context: str,
+        mapped_contract_error: SkillContractError | None = None,
+    ) -> None:
+        diagnostics: dict[str, object] = {
+            "context": context,
+            "error_type": type(err).__name__,
+            "error_message": str(err),
+        }
+        if isinstance(err, SkillLanguageModelError):
+            provider_diag = getattr(err, "diagnostics", None)
+            if isinstance(provider_diag, dict) and provider_diag:
+                diagnostics["provider_diagnostics"] = provider_diag
+                response_body = provider_diag.get("response_body")
+                if isinstance(response_body, str) and response_body:
+                    aggregated_metrics["provider_error_raw_response"] = response_body
+        if isinstance(err, SkillContractError):
+            diagnostics["contract_error"] = err.to_dict()
+            aggregated_metrics["skill_contract_error_payload"] = err.to_dict()
+        if mapped_contract_error is not None:
+            diagnostics["mapped_contract_error"] = mapped_contract_error.to_dict()
+            aggregated_metrics["skill_contract_error_payload"] = (
+                mapped_contract_error.to_dict()
+            )
+        aggregated_metrics["error_diagnostics"] = diagnostics
+        session.record_event(
+            actor="top-level",
+            event_type="error_diagnostics",
+            detail=(
+                f"{context}: {type(err).__name__}; "
+                f"diagnostics={self._serialize_diagnostic_object(diagnostics, max_chars=1200)}"
+            ),
+        )
+
     def _contract_error(self, *, why: str, fallback_reason: str) -> SkillContractError:
         return SkillContractError(
             code=SkillContractErrorCode.INVALID_OUTPUT,
@@ -769,16 +822,21 @@ class RetrieveSkill(SkillToolBase):
             "query": query.query,
             "rationale": f"runtime_fallback:{reason}",
         }
+        fallback_raw_result: dict[str, object] = {
+            "query": query.query,
+            "episodes_returned": len(fallback_episodes),
+            "fallback_reason": reason,
+        }
+        if aggregated_metrics is not None:
+            raw_error = aggregated_metrics.get("error_diagnostics")
+            if isinstance(raw_error, dict):
+                fallback_raw_result["error_diagnostics"] = raw_error
         session.record_tool_call(
             tool_name="direct_memory_search",
             arguments=fallback_arguments,
             status="success",
             result_summary=f"episodes={len(fallback_episodes)}",
-            raw_result={
-                "query": query.query,
-                "episodes_returned": len(fallback_episodes),
-                "fallback_reason": reason,
-            },
+            raw_result=fallback_raw_result,
         )
         session.record_event(
             actor="top-level",
@@ -1513,29 +1571,41 @@ class RetrieveSkill(SkillToolBase):
             )
 
         except SkillToolCallFormatError:
-            err = self._contract_error(
+            contract_error = self._contract_error(
                 why="Top-level tool-call payload shape invalid.",
                 fallback_reason="invalid_tool_call",
             )
+            self._record_error_diagnostics(
+                session=session,
+                aggregated_metrics=aggregated_metrics,
+                err=contract_error,
+                context="top_level_tool_call_format_error",
+            )
             return await self._fallback_with_reason(
                 policy=policy,
                 query=query,
                 session=session,
-                reason=err.payload.fallback_trigger_reason,
-                code=err.code,
+                reason=contract_error.payload.fallback_trigger_reason,
+                code=contract_error.code,
                 aggregated_metrics=aggregated_metrics,
             )
         except SkillToolNotFoundError:
-            err = self._contract_error(
+            contract_error = self._contract_error(
                 why="Top-level requested unsupported tool name.",
                 fallback_reason="invalid_tool_call",
+            )
+            self._record_error_diagnostics(
+                session=session,
+                aggregated_metrics=aggregated_metrics,
+                err=contract_error,
+                context="top_level_tool_not_found",
             )
             return await self._fallback_with_reason(
                 policy=policy,
                 query=query,
                 session=session,
-                reason=err.payload.fallback_trigger_reason,
-                code=err.code,
+                reason=contract_error.payload.fallback_trigger_reason,
+                code=contract_error.code,
                 aggregated_metrics=aggregated_metrics,
             )
         except SkillSessionLimitError as err:
@@ -1545,6 +1615,13 @@ class RetrieveSkill(SkillToolBase):
             contract_error = self._contract_error(
                 why=f"Top-level live session exceeded configured guardrails: {err}",
                 fallback_reason=reason,
+            )
+            self._record_error_diagnostics(
+                session=session,
+                aggregated_metrics=aggregated_metrics,
+                err=err,
+                context="top_level_session_limit",
+                mapped_contract_error=contract_error,
             )
             return await self._fallback_with_reason(
                 policy=policy,
@@ -1559,6 +1636,13 @@ class RetrieveSkill(SkillToolBase):
                 why=f"Top-level live session failed: {err}",
                 fallback_reason="downstream_tool_failure",
             )
+            self._record_error_diagnostics(
+                session=session,
+                aggregated_metrics=aggregated_metrics,
+                err=err,
+                context="top_level_session_language_model_error",
+                mapped_contract_error=contract_error,
+            )
             return await self._fallback_with_reason(
                 policy=policy,
                 query=query,
@@ -1572,6 +1656,12 @@ class RetrieveSkill(SkillToolBase):
                 "RetrieveSkill contract failure. reason=%s code=%s",
                 err.payload.fallback_trigger_reason,
                 err.code,
+            )
+            self._record_error_diagnostics(
+                session=session,
+                aggregated_metrics=aggregated_metrics,
+                err=err,
+                context="top_level_contract_error",
             )
             return await self._fallback_with_reason(
                 policy=policy,
@@ -1590,6 +1680,13 @@ class RetrieveSkill(SkillToolBase):
                 "RetrieveSkill downstream failure. reason=%s code=%s",
                 mapped.payload.fallback_trigger_reason,
                 mapped.code,
+            )
+            self._record_error_diagnostics(
+                session=session,
+                aggregated_metrics=aggregated_metrics,
+                err=err,
+                context="top_level_unhandled_exception",
+                mapped_contract_error=mapped,
             )
             return await self._fallback_with_reason(
                 policy=policy,

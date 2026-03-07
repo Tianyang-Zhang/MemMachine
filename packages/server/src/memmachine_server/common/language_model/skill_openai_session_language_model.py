@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 import httpx
@@ -24,6 +24,21 @@ logger = logging.getLogger(__name__)
 
 class SkillLanguageModelError(RuntimeError):
     """Base error for skill session runtime failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: dict[str, object] | None = None,
+    ) -> None:
+        """Store structured diagnostics for fallback metrics/debugging."""
+        self.diagnostics = diagnostics or {}
+        if self.diagnostics:
+            serialized = SkillLanguageModel.serialize_object_for_diagnostics(
+                self.diagnostics
+            )
+            message = f"{message} diagnostics={serialized}"
+        super().__init__(message)
 
 
 class SkillToolCallFormatError(SkillLanguageModelError):
@@ -341,7 +356,15 @@ class SkillLanguageModel:
                 if attempt >= max_attempts:
                     raise SkillLanguageModelError(
                         f"[call uuid: {call_uuid}] OpenAI responses.create failed "
-                        f"after {attempt} attempts due to retryable {type(err).__name__}."
+                        f"after {attempt} attempts due to retryable {type(err).__name__}.",
+                        diagnostics={
+                            "provider": "openai",
+                            "operation": "responses.create",
+                            "attempt": attempt,
+                            "error_type": type(err).__name__,
+                            "error_message": str(err),
+                            "request_payload": self._request_snapshot(kwargs),
+                        },
                     ) from err
                 logger.info(
                     "[call uuid: %s] Retrying responses.create in %d second(s) "
@@ -368,7 +391,14 @@ class SkillLanguageModel:
                     return await self._call_responses_create_http_fallback(**kwargs)
                 raise SkillLanguageModelError(
                     f"[call uuid: {call_uuid}] OpenAI responses.create failed "
-                    f"with non-retryable {type(err).__name__}."
+                    f"with non-retryable {type(err).__name__}.",
+                    diagnostics={
+                        "provider": "openai",
+                        "operation": "responses.create",
+                        "error_type": type(err).__name__,
+                        "error_message": str(err),
+                        "request_payload": self._request_snapshot(kwargs),
+                    },
                 ) from err
 
         raise SkillLanguageModelError(
@@ -506,6 +536,24 @@ class SkillLanguageModel:
                 return repr(response)
         return repr(response)
 
+    @staticmethod
+    def serialize_object_for_diagnostics(
+        payload: object,
+        *,
+        max_chars: int = 20000,
+    ) -> str:
+        """Serialize diagnostic payloads with hard truncation."""
+        try:
+            serialized = json.dumps(payload, default=str)
+        except Exception:
+            serialized = repr(payload)
+        if len(serialized) <= max_chars:
+            return serialized
+        return f"{serialized[:max_chars]}...[truncated]"
+
+    def _request_snapshot(self, request: dict[str, object] | dict[str, Any]) -> str:
+        return self.serialize_object_for_diagnostics(request)
+
     def _resolve_request_tools(
         self,
         *,
@@ -554,6 +602,7 @@ class SkillLanguageModel:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        request_snapshot = self._request_snapshot(kwargs)
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=120.0) as client:
                 response = await client.post(
@@ -563,7 +612,29 @@ class SkillLanguageModel:
                 )
                 response.raise_for_status()
                 return response.json()
+        except httpx.HTTPStatusError as err:
+            response = err.response
+            raise SkillLanguageModelError(
+                "OpenAI HTTP fallback /responses request failed.",
+                diagnostics={
+                    "provider": "openai",
+                    "operation": "responses.http_fallback",
+                    "error_type": type(err).__name__,
+                    "status_code": response.status_code,
+                    "response_body": self.serialize_object_for_diagnostics(
+                        response.text
+                    ),
+                    "request_payload": request_snapshot,
+                },
+            ) from err
         except httpx.HTTPError as err:
             raise SkillLanguageModelError(
-                "OpenAI HTTP fallback /responses request failed."
+                "OpenAI HTTP fallback /responses request failed.",
+                diagnostics={
+                    "provider": "openai",
+                    "operation": "responses.http_fallback",
+                    "error_type": type(err).__name__,
+                    "error_message": str(err),
+                    "request_payload": request_snapshot,
+                },
             ) from err

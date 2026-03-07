@@ -268,6 +268,7 @@ class SkillAnthropicSessionLanguageModel:
         create = self._resolve_messages_create(use_beta=use_beta)
         call_uuid = uuid4()
         sleep_seconds = 1
+        request_snapshot = self._request_snapshot(kwargs)
         for attempt in range(1, max_attempts + 1):
             try:
                 return await create(**kwargs)
@@ -288,9 +289,32 @@ class SkillAnthropicSessionLanguageModel:
                         self._max_retry_interval_seconds,
                     )
                     continue
+                response = getattr(err, "response", None)
+                status_code = getattr(response, "status_code", None)
+                response_body = None
+                if response is not None:
+                    response_text = getattr(response, "text", None)
+                    if isinstance(response_text, str) and response_text:
+                        response_body = self._serialize_object_for_diagnostics(
+                            response_text
+                        )
                 raise SkillLanguageModelError(
                     f"[call uuid: {call_uuid}] Anthropic messages.create failed "
-                    f"with {type(err).__name__}."
+                    f"with {type(err).__name__}.",
+                    diagnostics={
+                        "provider": "anthropic",
+                        "operation": (
+                            "beta.messages.create"
+                            if use_beta
+                            else "messages.create"
+                        ),
+                        "attempt": attempt,
+                        "error_type": type(err).__name__,
+                        "error_message": str(err),
+                        "status_code": status_code,
+                        "response_body": response_body,
+                        "request_payload": request_snapshot,
+                    },
                 ) from err
 
         raise SkillLanguageModelError("messages.create retry loop exited unexpectedly.")
@@ -491,6 +515,23 @@ class SkillAnthropicSessionLanguageModel:
                 return repr(response)
         return repr(response)
 
+    @staticmethod
+    def _serialize_object_for_diagnostics(
+        payload: object,
+        *,
+        max_chars: int = 20000,
+    ) -> str:
+        try:
+            serialized = json.dumps(payload, default=str)
+        except Exception:
+            serialized = repr(payload)
+        if len(serialized) <= max_chars:
+            return serialized
+        return f"{serialized[:max_chars]}...[truncated]"
+
+    def _request_snapshot(self, request: dict[str, object]) -> str:
+        return self._serialize_object_for_diagnostics(request)
+
     async def _resolve_native_skill_refs(
         self,
         bundles: list[ProviderSkillBundle],
@@ -567,7 +608,23 @@ class SkillAnthropicSessionLanguageModel:
                     data={"display_title": bundle.name},
                     files=multipart_files,
                 )
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as err:
+                    raise SkillLanguageModelError(
+                        "Anthropic native skill HTTP upload failed.",
+                        diagnostics={
+                            "provider": "anthropic",
+                            "operation": "skills.create.http_fallback",
+                            "error_type": type(err).__name__,
+                            "status_code": response.status_code,
+                            "response_body": self._serialize_object_for_diagnostics(
+                                response.text
+                            ),
+                            "skill_name": bundle.name,
+                            "bundle_path": bundle.path,
+                        },
+                    ) from err
                 payload = response.json()
         return self._extract_skill_id(payload)
 
